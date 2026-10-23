@@ -1,61 +1,41 @@
 
 import { useEffect, useRef, useState } from 'react'
 
-const C = {
-  bg: '#FAF9F6',
-  sidebar: '#F2F0EB',
-  text: '#292824',
-  muted: '#858178',
-  border: '#E7E4DC',
-  accent: '#D97757',
-  white: '#FFFFFF',
-  userBubble: '#F0EEE8',
+const COLORS = {
+  background: '#FFFFFF',
+  text: '#262626',
+  muted: '#777777',
+  border: '#E5E5E5',
+  userBubble: '#F4F4F4',
+  button: '#292929',
 }
 
-function Spark({ size = 24, color = C.accent }) {
-  return (
-    <span
-      aria-hidden="true"
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        color,
-        fontSize: size,
-        lineHeight: 1,
-      }}
-    >
-      ✳
-    </span>
-  )
+const MAX_FILES = 5
+const MAX_FILE_SIZE = 200 * 1024
+const MAX_TOTAL_TEXT = 12000
+
+const TEXT_EXTENSIONS = new Set([
+  'txt', 'md', 'csv', 'json', 'js', 'jsx', 'ts', 'tsx',
+  'py', 'html', 'css', 'xml', 'yaml', 'yml', 'log',
+  'sql', 'sh', 'toml', 'ini', 'c', 'cpp', 'h', 'hpp',
+  'java', 'go', 'rs', 'php', 'rb', 'swift', 'kt',
+])
+
+function isSupportedTextFile(file) {
+  const extension = file.name.split('.').pop().toLowerCase()
+  return TEXT_EXTENSIONS.has(extension) || file.type.startsWith('text/')
 }
 
 function Home() {
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
+  const [attachments, setAttachments] = useState([])
   const [loading, setLoading] = useState(false)
-  const [sidebarOpen, setSidebarOpen] = useState(true)
   const [notice, setNotice] = useState('')
-  const [isMobile, setIsMobile] = useState(false)
 
-  const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
-
-  useEffect(() => {
-    const updateLayout = () => {
-      const mobile = window.innerWidth < 650
-      setIsMobile(mobile)
-
-      if (mobile) {
-        setSidebarOpen(false)
-      }
-    }
-
-    updateLayout()
-    window.addEventListener('resize', updateLayout)
-
-    return () => window.removeEventListener('resize', updateLayout)
-  }, [])
+  const fileInputRef = useRef(null)
+  const messagesEndRef = useRef(null)
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({
@@ -67,31 +47,128 @@ function Home() {
   useEffect(() => {
     if (!notice) return
 
-    const timer = setTimeout(() => setNotice(''), 3000)
-    return () => clearTimeout(timer)
+    const timeout = setTimeout(() => setNotice(''), 4000)
+    return () => clearTimeout(timeout)
   }, [notice])
 
-  useEffect(() => {
-    const textarea = inputRef.current
-    if (!textarea) return
+  async function handleFilesSelected(event) {
+    const selected = Array.from(event.target.files || [])
+    event.target.value = ''
 
-    textarea.style.height = 'auto'
-    textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`
-  }, [input])
+    if (!selected.length) return
 
-  async function sendMessage(text = input) {
-    const prompt = text.trim()
+    let totalCharacters = attachments.reduce(
+      (total, file) => total + file.content.length,
+      0
+    )
 
-    if (!prompt || loading) return
+    let availableSlots = MAX_FILES - attachments.length
+    const accepted = []
+    const rejected = []
+
+    for (const file of selected) {
+      if (availableSlots <= 0) {
+        rejected.push(`${file.name}: maximum ${MAX_FILES} files`)
+        continue
+      }
+
+      if (!isSupportedTextFile(file)) {
+        rejected.push(`${file.name}: unsupported file type`)
+        continue
+      }
+
+      if (file.size > MAX_FILE_SIZE) {
+        rejected.push(`${file.name}: file exceeds 200 KB`)
+        continue
+      }
+
+      const remaining = MAX_TOTAL_TEXT - totalCharacters
+
+      if (remaining <= 0) {
+        rejected.push(`${file.name}: attachment text limit reached`)
+        continue
+      }
+
+      try {
+        const originalText = await file.text()
+        const content = originalText.slice(0, remaining)
+
+        accepted.push({
+          id: `${Date.now()}-${accepted.length}-${file.name}`,
+          name: file.name,
+          content,
+          truncated: originalText.length > content.length,
+        })
+
+        totalCharacters += content.length
+        availableSlots -= 1
+      } catch {
+        rejected.push(`${file.name}: could not read file`)
+      }
+    }
+
+    if (accepted.length) {
+      setAttachments((current) => [...current, ...accepted])
+    }
+
+    if (rejected.length) {
+      setNotice(
+        `Some files were not added: ${rejected.join('; ')}`
+      )
+    }
+  }
+
+  function removeAttachment(id) {
+    setAttachments((current) =>
+      current.filter((file) => file.id !== id)
+    )
+  }
+
+  async function sendMessage() {
+    const prompt = input.trim()
+
+    if ((!prompt && attachments.length === 0) || loading) return
+
+    const filesToSend = [...attachments]
+    const visibleText = prompt || 'Please review the attached files.'
+
+    const fileContents = filesToSend
+      .map((file) => {
+        const truncatedNote = file.truncated
+          ? '\n[File content truncated because of the size limit.]'
+          : ''
+
+        return (
+          `--- File: ${file.name} ---\n` +
+          file.content +
+          truncatedNote
+        )
+      })
+      .join('\n\n')
+
+    const apiContent = fileContents
+      ? `${visibleText}\n\nAttached file contents:\n\n${fileContents}`
+      : visibleText
 
     const nextMessages = [
       ...messages,
-      { role: 'user', content: prompt },
+      {
+        role: 'user',
+        content: apiContent,
+        displayContent: visibleText,
+        files: filesToSend.map((file) => file.name),
+      },
     ]
 
     setMessages(nextMessages)
     setInput('')
+    setAttachments([])
     setLoading(true)
+    setNotice('')
+
+    if (inputRef.current) {
+      inputRef.current.style.height = 'auto'
+    }
 
     try {
       const response = await fetch('/api/chat', {
@@ -100,7 +177,10 @@ function Home() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          messages: nextMessages,
+          messages: nextMessages.map(({ role, content }) => ({
+            role,
+            content,
+          })),
         }),
       })
 
@@ -108,7 +188,7 @@ function Home() {
 
       if (!response.ok) {
         throw new Error(
-          data.error || `Request failed with status ${response.status}`
+          data.error || `Request failed (${response.status})`
         )
       }
 
@@ -135,757 +215,414 @@ function Home() {
         {
           role: 'assistant',
           content:
-            `I couldn't connect to Ollama Cloud.\n\n` +
-            `${error.message}\n\n` +
-            'Check that your backend at /api/chat is configured and that your Ollama API key and model are correct.',
+            `I couldn't connect to Ollama Cloud.\n\n${error.message}\n\n` +
+            'Check your backend at /api/chat and your Vercel environment variables.',
           isError: true,
         },
       ])
     } finally {
       setLoading(false)
-      if (isMobile) setSidebarOpen(false)
+      inputRef.current?.focus()
     }
   }
 
-  function newChat() {
-    setMessages([])
-    setInput('')
-    setNotice('')
-
-    if (isMobile) setSidebarOpen(false)
-
-    setTimeout(() => inputRef.current?.focus(), 0)
-  }
-
   function handleKeyDown(event) {
-    if (event.key === 'Enter' && !event.shiftKey) {
+    if (
+      event.key === 'Enter' &&
+      !event.shiftKey &&
+      !event.nativeEvent.isComposing
+    ) {
       event.preventDefault()
       sendMessage()
     }
   }
 
-  const firstUserMessage = messages.find(
-    (message) => message.role === 'user'
-  )
-
-  const chatTitle = firstUserMessage
-    ? firstUserMessage.content.slice(0, 34) +
-      (firstUserMessage.content.length > 34 ? '…' : '')
-    : 'New conversation'
-
-  const suggestions = [
-    {
-      icon: '✧',
-      title: 'Explore an idea',
-      description: 'Think through a problem or possibility',
-      prompt:
-        'Help me explore an interesting idea and develop it further.',
-    },
-    {
-      icon: '⌘',
-      title: 'Write some code',
-      description: 'Build, debug, or improve a project',
-      prompt:
-        'Help me build a project. Start by asking what I want to create.',
-    },
-    {
-      icon: '▤',
-      title: 'Write something',
-      description: 'Create, edit, or improve your writing',
-      prompt:
-        'Help me write something clear, engaging, and well structured.',
-    },
-    {
-      icon: '◎',
-      title: 'Learn something',
-      description: 'Understand a difficult topic',
-      prompt:
-        'Teach me a challenging topic step by step, with examples.',
-    },
-  ]
-
-  const baseButton = {
-    border: 'none',
-    background: 'transparent',
-    color: C.text,
+  const buttonStyle = {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    border: `1px solid ${COLORS.border}`,
+    borderRadius: 999,
+    background: '#FFFFFF',
+    color: COLORS.text,
     cursor: 'pointer',
     fontFamily: 'inherit',
-    fontSize: 14,
+    fontSize: 13,
   }
 
   return (
-    <div
+    <main
       style={{
         display: 'flex',
-        position: 'relative',
+        flexDirection: 'column',
         width: '100%',
         height: '100dvh',
-        minHeight: 480,
-        overflow: 'hidden',
-        background: C.bg,
-        color: C.text,
+        minHeight: 400,
+        background: COLORS.background,
+        color: COLORS.text,
         fontFamily:
-          'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+          'Arial, Helvetica, -apple-system, BlinkMacSystemFont, sans-serif',
+        overflow: 'hidden',
       }}
     >
-      {/* Mobile sidebar backdrop */}
-      {isMobile && sidebarOpen && (
-        <button
-          aria-label="Close sidebar"
-          onClick={() => setSidebarOpen(false)}
-          style={{
-            position: 'fixed',
-            inset: 0,
-            zIndex: 5,
-            background: 'rgba(30, 28, 24, 0.25)',
-            border: 'none',
-            padding: 0,
-          }}
-        />
-      )}
-
-      {/* SIDEBAR */}
-      <aside
-        style={{
-          position: isMobile ? 'fixed' : 'relative',
-          inset: isMobile ? '0 auto 0 0' : 'auto',
-          zIndex: isMobile ? 6 : 1,
-          width: sidebarOpen ? 252 : 0,
-          minWidth: sidebarOpen ? 252 : 0,
-          height: '100%',
-          boxSizing: 'border-box',
-          overflow: 'hidden',
-          background: C.sidebar,
-          borderRight: sidebarOpen
-            ? `1px solid ${C.border}`
-            : 'none',
-          display: 'flex',
-          flexDirection: 'column',
-          transition: 'width 180ms ease, min-width 180ms ease',
-        }}
-      >
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            padding: '24px 18px 28px',
-            gap: 12,
-            whiteSpace: 'nowrap',
-          }}
-        >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
-            }}
-          >
-            <Spark size={24} />
-            <span
-              style={{
-                fontSize: 17,
-                fontWeight: 650,
-                letterSpacing: '-0.6px',
-              }}
-            >
-              GOD AI
-            </span>
-          </div>
-
-          <button
-            aria-label="Collapse sidebar"
-            onClick={() => setSidebarOpen(false)}
-            style={{
-              ...baseButton,
-              padding: 7,
-              borderRadius: 8,
-              color: C.muted,
-              fontSize: 19,
-            }}
-          >
-            ‹
-          </button>
-        </div>
-
-        <div style={{ padding: '0 12px', whiteSpace: 'nowrap' }}>
-          <button
-            onClick={newChat}
-            style={{
-              ...baseButton,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 11,
-              width: '100%',
-              padding: '11px 12px',
-              borderRadius: 10,
-              textAlign: 'left',
-              background: '#E8E5DE',
-              fontWeight: 550,
-            }}
-          >
-            <span style={{ fontSize: 20, lineHeight: 1 }}>＋</span>
-            New chat
-          </button>
-
-          <div
-            style={{
-              margin: '30px 10px 11px',
-              color: C.muted,
-              fontSize: 11,
-              letterSpacing: '1.3px',
-              fontWeight: 650,
-            }}
-          >
-            WORKSPACE
-          </div>
-
-          <button
-            onClick={() =>
-              setNotice('Project workspaces are not configured yet.')
-            }
-            style={{
-              ...baseButton,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 12,
-              width: '100%',
-              padding: '10px 12px',
-              borderRadius: 9,
-              textAlign: 'left',
-              color: '#55524B',
-            }}
-          >
-            <span style={{ width: 15, textAlign: 'center' }}>▦</span>
-            Projects
-          </button>
-
-          <button
-            onClick={() =>
-              setNotice('Artifact tools are not configured yet.')
-            }
-            style={{
-              ...baseButton,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 12,
-              width: '100%',
-              padding: '10px 12px',
-              borderRadius: 9,
-              textAlign: 'left',
-              color: '#55524B',
-            }}
-          >
-            <span style={{ width: 15, textAlign: 'center' }}>▧</span>
-            Artifacts
-          </button>
-
-          <div
-            style={{
-              margin: '32px 10px 12px',
-              color: C.muted,
-              fontSize: 11,
-              letterSpacing: '1.3px',
-              fontWeight: 650,
-            }}
-          >
-            RECENT
-          </div>
-
-          {firstUserMessage ? (
-            <button
-              onClick={() => inputRef.current?.focus()}
-              title={chatTitle}
-              style={{
-                ...baseButton,
-                display: 'block',
-                width: '100%',
-                padding: '10px 12px',
-                borderRadius: 9,
-                textAlign: 'left',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-                background: '#E8E5DE',
-              }}
-            >
-              {chatTitle}
-            </button>
-          ) : (
-            <div
-              style={{
-                padding: '4px 10px',
-                color: '#99948A',
-                fontSize: 13,
-                lineHeight: 1.6,
-                whiteSpace: 'normal',
-              }}
-            >
-              Your conversations will appear here.
-            </div>
-          )}
-        </div>
-
-        <div style={{ flex: 1 }} />
-
-        <div
-          style={{
-            borderTop: `1px solid ${C.border}`,
-            padding: 16,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 11,
-            whiteSpace: 'nowrap',
-          }}
-        >
-          <div
-            style={{
-              width: 34,
-              height: 34,
-              borderRadius: '50%',
-              background: '#E1D9CB',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: 13,
-              fontWeight: 650,
-              color: '#625A4E',
-            }}
-          >
-            U
-          </div>
-
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 600 }}>
-              My account
-            </div>
-            <div
-              style={{
-                fontSize: 11,
-                color: C.muted,
-                marginTop: 3,
-              }}
-            >
-              Personal workspace
-            </div>
-          </div>
-        </div>
-      </aside>
-
-      {/* MAIN CHAT */}
-      <main
+      {/* CHAT WINDOW */}
+      <section
+        aria-label="Conversation"
         style={{
           flex: 1,
-          minWidth: 0,
-          height: '100%',
-          display: 'flex',
-          flexDirection: 'column',
+          minHeight: 0,
+          overflowY: 'auto',
+          padding: '32px 20px 24px',
         }}
       >
-        {/* HEADER */}
-        <header
+        <div
           style={{
-            height: 64,
-            minHeight: 64,
-            padding: '0 24px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 12,
-            borderBottom: `1px solid ${C.border}`,
-            boxSizing: 'border-box',
+            maxWidth: 768,
+            width: '100%',
+            margin: '0 auto',
           }}
         >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 13,
-              minWidth: 0,
-            }}
-          >
-            {!sidebarOpen && (
-              <button
-                aria-label="Open sidebar"
-                onClick={() => setSidebarOpen(true)}
-                style={{
-                  ...baseButton,
-                  fontSize: 22,
-                  color: C.muted,
-                  padding: 4,
-                  flexShrink: 0,
-                }}
-              >
-                ☰
-              </button>
-            )}
-
-            <span
-              style={{
-                fontSize: 14,
-                fontWeight: 550,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {messages.length ? chatTitle : 'New chat'}
-            </span>
-
-            <span style={{ color: '#B3AEA4', fontSize: 11 }}>
-              ⌄
-            </span>
-          </div>
-
-          <div
-            style={{
-              fontSize: 12,
-              color: C.muted,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 7,
-              flexShrink: 0,
-            }}
-          >
-            <span
-              style={{
-                width: 7,
-                height: 7,
-                borderRadius: '50%',
-                background: '#8FA88A',
-              }}
-            />
-            AI workspace
-          </div>
-        </header>
-
-        {/* CONVERSATION */}
-        <section
-          style={{
-            flex: 1,
-            minHeight: 0,
-            overflowY: 'auto',
-            padding: isMobile ? '24px 16px 18px' : '30px 22px 20px',
-            boxSizing: 'border-box',
-          }}
-        >
-          {messages.length === 0 ? (
+          {messages.map((message, index) => (
             <div
+              key={`${index}-${message.role}`}
               style={{
-                maxWidth: 710,
-                width: '100%',
-                minHeight: '100%',
-                margin: '0 auto',
                 display: 'flex',
                 flexDirection: 'column',
-                justifyContent: 'center',
-                paddingBottom: 30,
-                boxSizing: 'border-box',
-              }}
-            >
-              <div style={{ marginBottom: 22 }}>
-                <Spark size={34} />
-              </div>
-
-              <h1
-                style={{
-                  fontFamily: 'Georgia, "Times New Roman", serif',
-                  fontWeight: 400,
-                  letterSpacing: '-1.8px',
-                  fontSize: isMobile ? 36 : 'clamp(34px, 5vw, 48px)',
-                  lineHeight: 1.16,
-                  margin: '0 0 13px',
-                  color: '#34332E',
-                }}
-              >
-                What can I help you
-                <br />
-                with today?
-              </h1>
-
-              <p
-                style={{
-                  fontSize: 15,
-                  lineHeight: 1.7,
-                  color: C.muted,
-                  margin: '0 0 35px',
-                  maxWidth: 450,
-                }}
-              >
-                Think, create, explore, and solve problems together.
-                Start with a question or choose an idea below.
-              </p>
-
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-                  gap: 12,
-                }}
-              >
-                {suggestions.map((item) => (
-                  <button
-                    key={item.title}
-                    onClick={() => sendMessage(item.prompt)}
-                    style={{
-                      background: 'rgba(255,255,255,0.65)',
-                      border: `1px solid ${C.border}`,
-                      borderRadius: 13,
-                      padding: '17px 16px',
-                      textAlign: 'left',
-                      cursor: 'pointer',
-                      fontFamily: 'inherit',
-                      color: C.text,
-                      minHeight: 105,
-                    }}
-                  >
-                    <div
-                      style={{
-                        fontSize: 18,
-                        color: C.accent,
-                        marginBottom: 12,
-                      }}
-                    >
-                      {item.icon}
-                    </div>
-
-                    <div
-                      style={{
-                        fontSize: 13,
-                        fontWeight: 600,
-                        marginBottom: 5,
-                      }}
-                    >
-                      {item.title}
-                    </div>
-
-                    <div
-                      style={{
-                        fontSize: 12,
-                        lineHeight: 1.5,
-                        color: C.muted,
-                      }}
-                    >
-                      {item.description}
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <div
-              style={{
-                maxWidth: 760,
+                alignItems:
+                  message.role === 'user'
+                    ? 'flex-end'
+                    : 'flex-start',
+                marginBottom: 28,
                 width: '100%',
-                margin: '0 auto',
-                paddingBottom: 24,
               }}
             >
-              {messages.map((message, index) => (
+              {message.role === 'user' ? (
                 <div
-                  key={`${index}-${message.role}`}
                   style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems:
-                      message.role === 'user' ? 'flex-end' : 'flex-start',
-                    marginBottom: 28,
+                    maxWidth: '85%',
+                    background: COLORS.userBubble,
+                    borderRadius: 22,
+                    padding: '12px 17px',
+                    fontSize: 15,
+                    lineHeight: 1.7,
+                    whiteSpace: 'pre-wrap',
+                    overflowWrap: 'anywhere',
                   }}
                 >
-                  {message.role === 'assistant' && (
+                  {message.displayContent || message.content}
+
+                  {message.files?.length > 0 && (
                     <div
                       style={{
                         display: 'flex',
-                        alignItems: 'center',
-                        gap: 9,
-                        marginBottom: 10,
-                        fontSize: 12,
-                        fontWeight: 650,
+                        flexWrap: 'wrap',
+                        gap: 6,
+                        marginTop: 10,
                       }}
                     >
-                      <Spark size={18} />
-                      GOD AI
+                      {message.files.map((name) => (
+                        <div
+                          key={name}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 6,
+                            padding: '5px 9px',
+                            border: '1px solid #DDDDDD',
+                            borderRadius: 9,
+                            background: '#FFFFFF',
+                            fontSize: 12,
+                            overflowWrap: 'anywhere',
+                          }}
+                        >
+                          <span aria-hidden="true">▤</span>
+                          {name}
+                        </div>
+                      ))}
                     </div>
                   )}
-
-                  <div
-                    style={{
-                      maxWidth: message.role === 'user' ? '88%' : '100%',
-                      background:
-                        message.role === 'user'
-                          ? C.userBubble
-                          : 'transparent',
-                      borderRadius: message.role === 'user' ? 17 : 0,
-                      padding:
-                        message.role === 'user' ? '13px 17px' : '0 2px',
-                      fontSize: 15,
-                      lineHeight: 1.8,
-                      whiteSpace: 'pre-wrap',
-                      overflowWrap: 'anywhere',
-                      color: message.isError ? '#B34D3B' : C.text,
-                    }}
-                  >
-                    {message.content}
-                  </div>
                 </div>
-              ))}
-
-              {loading && (
+              ) : (
                 <div
                   style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 10,
-                    color: C.muted,
-                    fontSize: 13,
-                    padding: '5px 0 25px',
+                    width: '100%',
+                    maxWidth: '100%',
+                    padding: '2px 0',
+                    fontSize: 15,
+                    lineHeight: 1.85,
+                    whiteSpace: 'pre-wrap',
+                    overflowWrap: 'anywhere',
+                    color: message.isError ? '#B42318' : COLORS.text,
                   }}
                 >
-                  <Spark size={19} />
-                  Thinking…
+                  {message.content}
                 </div>
               )}
-
-              <div ref={messagesEndRef} />
             </div>
-          )}
-        </section>
+          ))}
 
-        {/* MESSAGE COMPOSER */}
-        <div
-          style={{
-            padding: isMobile ? '10px 12px 12px' : '12px 22px 16px',
-            background:
-              'linear-gradient(to bottom, rgba(250,249,246,0), #FAF9F6 18%)',
-          }}
-        >
-          <div style={{ maxWidth: 760, margin: '0 auto' }}>
+          {loading && (
             <div
+              role="status"
               style={{
-                border: '1px solid #DDD9D0',
-                borderRadius: 18,
-                background: C.white,
-                padding: '13px 14px 10px 18px',
-                boxShadow: '0 5px 20px rgba(48, 43, 32, 0.045)',
+                margin: '8px 0 28px',
+                fontSize: 14,
+                color: COLORS.muted,
               }}
             >
-              <textarea
-                ref={inputRef}
-                value={input}
-                onChange={(event) => {
-                  setInput(event.target.value)
-                }}
-                onKeyDown={handleKeyDown}
-                placeholder="Message GOD AI…"
-                rows={1}
-                aria-label="Message GOD AI"
-                style={{
-                  display: 'block',
-                  width: '100%',
-                  minHeight: 29,
-                  maxHeight: 160,
-                  resize: 'none',
-                  overflowY: 'auto',
-                  border: 'none',
-                  outline: 'none',
-                  background: 'transparent',
-                  color: C.text,
-                  fontFamily: 'inherit',
-                  fontSize: 15,
-                  lineHeight: 1.65,
-                  padding: '0 0 9px',
-                  boxSizing: 'border-box',
-                }}
-              />
+              Thinking…
+            </div>
+          )}
 
+          <div ref={messagesEndRef} />
+        </div>
+      </section>
+
+      {/* PROMPT BOX */}
+      <footer
+        style={{
+          flexShrink: 0,
+          width: '100%',
+          padding: '12px 18px 22px',
+          background: '#FFFFFF',
+        }}
+      >
+        <div
+          style={{
+            maxWidth: 768,
+            width: '100%',
+            margin: '0 auto',
+          }}
+        >
+          <div
+            style={{
+              width: '100%',
+              border: '1px solid #D9D9D9',
+              borderRadius: 26,
+              background: '#FFFFFF',
+              padding: '13px 14px 10px 17px',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
+              boxSizing: 'border-box',
+            }}
+          >
+            {/* ATTACHED FILES */}
+            {attachments.length > 0 && (
               <div
                 style={{
                   display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  gap: 12,
+                  flexWrap: 'wrap',
+                  gap: 8,
+                  paddingBottom: 10,
                 }}
               >
-                <span
-                  style={{
-                    fontSize: 11,
-                    color: '#9A958B',
-                  }}
-                >
-                  Shift + Enter for a new line
-                </span>
+                {attachments.map((file) => (
+                  <div
+                    key={file.id}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 9,
+                      maxWidth: '100%',
+                      border: `1px solid ${COLORS.border}`,
+                      borderRadius: 12,
+                      padding: '8px 10px',
+                      fontSize: 12,
+                      background: '#FAFAFA',
+                    }}
+                  >
+                    <span aria-hidden="true">▤</span>
 
-                <button
-                  onClick={() => sendMessage()}
-                  disabled={!input.trim() || loading}
-                  aria-label="Send message"
-                  style={{
-                    width: 34,
-                    height: 34,
-                    borderRadius: 11,
-                    border: 'none',
-                    background:
-                      input.trim() && !loading
-                        ? C.accent
-                        : '#E9E6E0',
-                    color:
-                      input.trim() && !loading
-                        ? '#FFFFFF'
-                        : '#A6A197',
-                    fontSize: 19,
-                    cursor:
-                      input.trim() && !loading
-                        ? 'pointer'
-                        : 'not-allowed',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    flexShrink: 0,
-                  }}
-                >
-                  ↑
-                </button>
+                    <span
+                      title={file.name}
+                      style={{
+                        maxWidth: 180,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {file.name}
+                    </span>
+
+                    <button
+                      type="button"
+                      aria-label={`Remove ${file.name}`}
+                      title="Remove file"
+                      onClick={() => removeAttachment(file.id)}
+                      style={{
+                        border: 'none',
+                        background: 'transparent',
+                        color: COLORS.muted,
+                        cursor: 'pointer',
+                        padding: 0,
+                        fontSize: 17,
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
               </div>
-            </div>
+            )}
 
+            {/* MESSAGE INPUT */}
+            <textarea
+              ref={inputRef}
+              value={input}
+              onChange={(event) => {
+                setInput(event.target.value)
+                event.target.style.height = 'auto'
+                event.target.style.height =
+                  Math.min(event.target.scrollHeight, 180) + 'px'
+              }}
+              onKeyDown={handleKeyDown}
+              placeholder="Message GOD AI"
+              aria-label="Message GOD AI"
+              rows={1}
+              style={{
+                display: 'block',
+                width: '100%',
+                minHeight: 36,
+                maxHeight: 180,
+                resize: 'none',
+                overflowY: 'auto',
+                border: 'none',
+                outline: 'none',
+                boxShadow: 'none',
+                background: 'transparent',
+                color: COLORS.text,
+                fontFamily: 'inherit',
+                fontSize: 16,
+                lineHeight: 1.6,
+                padding: '5px 0 9px',
+                boxSizing: 'border-box',
+              }}
+            />
+
+            {/* ADD FILES + SEND */}
             <div
               style={{
-                fontSize: 11,
-                lineHeight: 1.6,
-                color: '#9A958B',
-                textAlign: 'center',
-                marginTop: 12,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 12,
               }}
             >
-              GOD AI can make mistakes. Check important information.
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                }}
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  accept={[
+                    ...Array.from(TEXT_EXTENSIONS).map((ext) => `.${ext}`),
+                    'text/*',
+                  ].join(',')}
+                  onChange={handleFilesSelected}
+                  style={{ display: 'none' }}
+                />
+
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={
+                    loading || attachments.length >= MAX_FILES
+                  }
+                  style={{
+                    ...buttonStyle,
+                    width: 38,
+                    height: 38,
+                    fontSize: 23,
+                    borderRadius: '50%',
+                    opacity:
+                      loading || attachments.length >= MAX_FILES
+                        ? 0.45
+                        : 1,
+                    cursor:
+                      loading || attachments.length >= MAX_FILES
+                        ? 'not-allowed'
+                        : 'pointer',
+                  }}
+                  title="Add files"
+                  aria-label="Add files"
+                >
+                  +
+                </button>
+
+                <span
+                  style={{
+                    fontSize: 12,
+                    color: COLORS.muted,
+                  }}
+                >
+                  Add files
+                </span>
+              </div>
+
+              <button
+                type="button"
+                onClick={sendMessage}
+                disabled={
+                  loading ||
+                  (!input.trim() && attachments.length === 0)
+                }
+                aria-label="Send message"
+                title="Send message"
+                style={{
+                  width: 38,
+                  height: 38,
+                  flexShrink: 0,
+                  border: 'none',
+                  borderRadius: '50%',
+                  background:
+                    !loading &&
+                    (input.trim() || attachments.length > 0)
+                      ? COLORS.button
+                      : '#E5E5E5',
+                  color:
+                    !loading &&
+                    (input.trim() || attachments.length > 0)
+                      ? '#FFFFFF'
+                      : '#999999',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: 21,
+                  cursor:
+                    !loading &&
+                    (input.trim() || attachments.length > 0)
+                      ? 'pointer'
+                      : 'not-allowed',
+                }}
+              >
+                ↑
+              </button>
             </div>
           </div>
-        </div>
 
-        {/* SMALL STATUS MESSAGE */}
-        {notice && (
-          <div
-            role="status"
-            style={{
-              position: 'fixed',
-              bottom: 85,
-              left: '50%',
-              transform: 'translateX(-50%)',
-              padding: '11px 16px',
-              background: '#33312C',
-              color: '#FFFFFF',
-              borderRadius: 10,
-              fontSize: 13,
-              boxShadow: '0 4px 18px #0002',
-              maxWidth: '90vw',
-              zIndex: 10,
-            }}
-          >
-            {notice}
-          </div>
-        )}
-      </main>
-    </div>
+          {notice && (
+            <div
+              role="status"
+              style={{
+                marginTop: 10,
+                textAlign: 'center',
+                fontSize: 12,
+                color: '#B42318',
+                overflowWrap: 'anywhere',
+              }}
+            >
+              {notice}
+            </div>
+          )}
+        </div>
+      </footer>
+    </main>
   )
 }
 
