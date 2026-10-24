@@ -2,12 +2,17 @@
 import Head from 'next/head'
 import { useEffect, useRef, useState } from 'react'
 
+// Base64 adds about one-third to image size. Keep all compressed JPEGs
+// below 2.5 MiB so the request can fit within Vercel's body-size limit.
+const MAX_SOURCE_IMAGE_BYTES = 25 * 1024 * 1024
+const MAX_SINGLE_JPEG_BYTES = 2 * 1024 * 1024
+const MAX_TOTAL_JPEG_BYTES = Math.floor(2.5 * 1024 * 1024)
+const MAX_TEXT_FILE_BYTES = 200 * 1024
+const MAX_TEXT_CHARACTERS = 5000
 const MAX_FILES = 5
-const MAX_TEXT_BYTES = 200 * 1024
-const MAX_IMAGE_BYTES = 1024 * 1024
-const MAX_TOTAL_IMAGE_BYTES = 1024 * 1024
-const MAX_TEXT_CHARS = 12000
-const MAX_HISTORY = 30
+const MAX_HISTORY = 12
+const MAX_IMAGE_EDGE = 2560
+const MIN_IMAGE_BUDGET = 32 * 1024
 
 const TEXT_EXTENSIONS = new Set([
   'txt', 'md', 'csv', 'json', 'js', 'jsx', 'ts', 'tsx',
@@ -22,7 +27,7 @@ const IMAGE_TYPES = new Set([
   'image/webp',
 ])
 
-const COLORS = {
+const THEMES = {
   light: {
     page: '#FFFFFF',
     text: '#262626',
@@ -41,26 +46,29 @@ const COLORS = {
   },
 }
 
-function resizeComposer(element) {
-  if (!element) return
+function resizeComposer(textarea) {
+  if (!textarea) return
 
-  element.style.height = 'auto'
+  textarea.style.height = 'auto'
 
-  const style = window.getComputedStyle(element)
-  const lineHeight = parseFloat(style.lineHeight) || 24
+  const style = window.getComputedStyle(textarea)
+  const lineHeight = Number.parseFloat(style.lineHeight) || 24
   const padding =
-    (parseFloat(style.paddingTop) || 0) +
-    (parseFloat(style.paddingBottom) || 0)
+    (Number.parseFloat(style.paddingTop) || 0) +
+    (Number.parseFloat(style.paddingBottom) || 0)
 
   const minHeight = lineHeight + padding
   const maxHeight = lineHeight * 2 + padding
-  const desiredHeight = Math.max(minHeight, element.scrollHeight)
+  const contentHeight = textarea.scrollHeight
 
-  element.style.height = `${Math.min(desiredHeight, maxHeight)}px`
-  element.style.overflowY = desiredHeight > maxHeight ? 'auto' : 'hidden'
+  textarea.style.height =
+    `${Math.min(Math.max(minHeight, contentHeight), maxHeight)}px`
+
+  textarea.style.overflowY =
+    contentHeight > maxHeight ? 'auto' : 'hidden'
 }
 
-function readDataURL(file) {
+function readAsDataURL(blob) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
 
@@ -68,24 +76,182 @@ function readDataURL(file) {
       if (typeof reader.result === 'string') {
         resolve(reader.result)
       } else {
-        reject(new Error('Could not read the selected file.'))
+        reject(new Error('Could not read the compressed image.'))
       }
     }
 
-    reader.onerror = () => reject(new Error('Could not read the selected file.'))
-    reader.readAsDataURL(file)
+    reader.onerror = () => {
+      reject(new Error('Could not read the compressed image.'))
+    }
+
+    reader.readAsDataURL(blob)
   })
+}
+
+function canvasToJpeg(canvas, quality) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (blob) resolve(blob)
+        else reject(new Error('JPEG compression failed.'))
+      },
+      'image/jpeg',
+      quality
+    )
+  })
+}
+
+async function decodeImage(file) {
+  if (typeof createImageBitmap === 'function') {
+    const bitmap = await createImageBitmap(file)
+
+    return {
+      width: bitmap.width,
+      height: bitmap.height,
+      draw(context, width, height) {
+        context.drawImage(bitmap, 0, 0, width, height)
+      },
+      close() {
+        if (typeof bitmap.close === 'function') bitmap.close()
+      },
+    }
+  }
+
+  // Fallback for browsers without createImageBitmap.
+  const objectURL = URL.createObjectURL(file)
+  const image = new Image()
+  image.src = objectURL
+
+  try {
+    if (typeof image.decode === 'function') {
+      await image.decode()
+    } else {
+      await new Promise((resolve, reject) => {
+        image.onload = resolve
+        image.onerror = () => reject(new Error('Could not open this image.'))
+      })
+    }
+  } catch (error) {
+    URL.revokeObjectURL(objectURL)
+    throw error
+  }
+
+  return {
+    width: image.naturalWidth,
+    height: image.naturalHeight,
+    draw(context, width, height) {
+      context.drawImage(image, 0, 0, width, height)
+    },
+    close() {
+      URL.revokeObjectURL(objectURL)
+    },
+  }
+}
+
+// Convert PNG, JPEG, or WebP to a smaller JPEG in the browser.
+// Reduce quality first, then resolution if necessary.
+async function compressImageToJpeg(file, byteLimit) {
+  if (file.size > MAX_SOURCE_IMAGE_BYTES) {
+    throw new Error('Choose an original image smaller than 25 MB.')
+  }
+
+  if (byteLimit < MIN_IMAGE_BUDGET) {
+    throw new Error(
+      'There is not enough room for another image. Remove an image or send this one separately.'
+    )
+  }
+
+  const image = await decodeImage(file)
+
+  try {
+    if (!image.width || !image.height) {
+      throw new Error('This image has invalid dimensions.')
+    }
+
+    let scale = Math.min(
+      1,
+      MAX_IMAGE_EDGE / Math.max(image.width, image.height)
+    )
+
+    const qualities = [0.86, 0.78, 0.70, 0.62, 0.54, 0.46]
+
+    for (let resizeAttempt = 0; resizeAttempt < 10; resizeAttempt += 1) {
+      const width = Math.max(1, Math.round(image.width * scale))
+      const height = Math.max(1, Math.round(image.height * scale))
+      const canvas = document.createElement('canvas')
+
+      canvas.width = width
+      canvas.height = height
+
+      const context = canvas.getContext('2d', { alpha: false })
+
+      if (!context) {
+        throw new Error('Your browser could not prepare this image.')
+      }
+
+      // JPEG does not support transparency; fill transparent areas white.
+      context.fillStyle = '#FFFFFF'
+      context.fillRect(0, 0, width, height)
+      image.draw(context, width, height)
+
+      for (const quality of qualities) {
+        const blob = await canvasToJpeg(canvas, quality)
+
+        if (blob.size > 0 && blob.size <= byteLimit) {
+          const dataURL = await readAsDataURL(blob)
+          const comma = dataURL.indexOf(',')
+          const base64 = comma >= 0 ? dataURL.slice(comma + 1) : ''
+
+          if (!base64) {
+            throw new Error('Compressed image data was empty.')
+          }
+
+          const baseName =
+            file.name.replace(/\.[^/.]+$/, '') || 'image'
+
+          return {
+            name: `${baseName}.jpg`,
+            kind: 'image',
+            mime: 'image/jpeg',
+            size: blob.size,
+            base64,
+            dataURL,
+            width,
+            height,
+          }
+        }
+      }
+
+      // Lower the resolution only when quality reduction was not enough.
+      scale *= 0.8
+    }
+
+    throw new Error(
+      'Could not compress this image enough. Try a smaller image.'
+    )
+  } finally {
+    image.close()
+  }
 }
 
 function isTextFile(file) {
   const extension = file.name.split('.').pop().toLowerCase()
-  return TEXT_EXTENSIONS.has(extension) ||
+
+  return (
+    TEXT_EXTENSIONS.has(extension) ||
     (file.type || '').startsWith('text/')
+  )
 }
 
 function SendTriangle({ color }) {
   return (
-    <svg width="23" height="23" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <svg
+      width="23"
+      height="23"
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
+    >
       <path
         d="M12 4 L19.15 16.38 L4.85 16.38 Z"
         stroke={color}
@@ -108,15 +274,15 @@ export default function Home() {
   const fileInputRef = useRef(null)
   const messagesEndRef = useRef(null)
 
-  const theme = darkMode ? COLORS.dark : COLORS.light
+  const theme = darkMode ? THEMES.dark : THEMES.light
   const canSend =
     !loading && (input.trim().length > 0 || attachments.length > 0)
 
-  // Follow the device's appearance setting automatically.
+  // Follow the device's light/dark appearance automatically.
   useEffect(() => {
     const preference = window.matchMedia('(prefers-color-scheme: dark)')
-
     const updateTheme = (event) => setDarkMode(event.matches)
+
     setDarkMode(preference.matches)
 
     if (preference.addEventListener) {
@@ -146,9 +312,10 @@ export default function Home() {
     const selected = Array.from(event.target.files || [])
     event.target.value = ''
 
-    if (selected.length === 0) return
+    if (!selected.length) return
 
     let slots = MAX_FILES - attachments.length
+
     let imageBytes = attachments
       .filter((file) => file.kind === 'image')
       .reduce((sum, file) => sum + file.size, 0)
@@ -166,47 +333,31 @@ export default function Home() {
         break
       }
 
-      if (IMAGE_TYPES.has(file.type)) {
-        if (file.size > MAX_IMAGE_BYTES) {
-          rejected.push(`${file.name}: images must be 1 MB or smaller.`)
+      if ((file.type || '').startsWith('image/')) {
+        if (!IMAGE_TYPES.has(file.type)) {
+          rejected.push(`${file.name}: use PNG, JPEG, or WebP.`)
           continue
         }
 
-        if (imageBytes + file.size > MAX_TOTAL_IMAGE_BYTES) {
-          rejected.push('Combined image size cannot exceed 1 MB.')
-          continue
-        }
+        const imageBudget = Math.min(
+          MAX_SINGLE_JPEG_BYTES,
+          MAX_TOTAL_JPEG_BYTES - imageBytes
+        )
 
         try {
-          const dataURL = await readDataURL(file)
-          const base64 = dataURL.split(',')[1]
-
-          if (!base64) {
-            rejected.push(`${file.name}: invalid image data.`)
-            continue
-          }
+          const compressed = await compressImageToJpeg(file, imageBudget)
 
           accepted.push({
-            id: `${Date.now()}-${accepted.length}-${file.name}`,
-            name: file.name,
-            kind: 'image',
-            mime: file.type,
-            size: file.size,
-            base64,
-            dataURL,
+            id: `${Date.now()}-${accepted.length}-${compressed.name}`,
+            ...compressed,
           })
 
-          imageBytes += file.size
+          imageBytes += compressed.size
           slots -= 1
-        } catch {
-          rejected.push(`${file.name}: could not read the image.`)
+        } catch (error) {
+          rejected.push(`${file.name}: ${error.message}`)
         }
 
-        continue
-      }
-
-      if ((file.type || '').startsWith('image/')) {
-        rejected.push(`${file.name}: use PNG, JPEG, or WebP images.`)
         continue
       }
 
@@ -215,35 +366,35 @@ export default function Home() {
         continue
       }
 
-      if (file.size > MAX_TEXT_BYTES) {
+      if (file.size > MAX_TEXT_FILE_BYTES) {
         rejected.push(`${file.name}: text files must be 200 KB or smaller.`)
         continue
       }
 
-      const remaining = MAX_TEXT_CHARS - textCharacters
+      const remaining = MAX_TEXT_CHARACTERS - textCharacters
 
       if (remaining <= 0) {
-        rejected.push('The combined text attachment limit was reached.')
+        rejected.push('Combined text attachment limit reached.')
         continue
       }
 
       try {
-        const original = await file.text()
-        const content = original.slice(0, remaining)
+        const originalText = await file.text()
+        const content = originalText.slice(0, remaining)
 
         accepted.push({
           id: `${Date.now()}-${accepted.length}-${file.name}`,
           name: file.name,
           kind: 'text',
-          content,
           size: file.size,
-          truncated: original.length > content.length,
+          content,
+          truncated: originalText.length > content.length,
         })
 
         textCharacters += content.length
         slots -= 1
       } catch {
-        rejected.push(`${file.name}: could not read the file.`)
+        rejected.push(`${file.name}: could not read this file.`)
       }
     }
 
@@ -273,37 +424,38 @@ export default function Home() {
         ? 'Please analyze the attached image(s).'
         : 'Please review the attached file(s).')
 
-    const fileText = files
+    const textContent = files
       .filter((file) => file.kind === 'text')
       .map((file) => {
         const note = file.truncated
-          ? '\n[File content shortened to fit the attachment limit.]'
+          ? '\n[File content was shortened to fit the attachment limit.]'
           : ''
 
         return `--- File: ${file.name} ---\n${file.content}${note}`
       })
       .join('\n\n')
 
-    const content = fileText
-      ? `${displayContent}\n\nAttached file contents:\n\n${fileText}`
+    const content = textContent
+      ? `${displayContent}\n\nAttached file contents:\n\n${textContent}`
       : displayContent
 
-    const userMessage = {
-      role: 'user',
-      content,
-      displayContent,
-      images: files
-        .filter((file) => file.kind === 'image')
-        .map(({ name, mime, base64 }) => ({ name, mime, base64 })),
-      displayAttachments: files.map((file) => ({
-        id: file.id,
-        name: file.name,
-        kind: file.kind,
-        dataURL: file.dataURL || null,
-      })),
-    }
-
-    const nextMessages = [...messages, userMessage]
+    const nextMessages = [
+      ...messages,
+      {
+        role: 'user',
+        content,
+        displayContent,
+        images: files
+          .filter((file) => file.kind === 'image')
+          .map(({ name, mime, base64 }) => ({ name, mime, base64 })),
+        displayAttachments: files.map((file) => ({
+          id: file.id,
+          name: file.name,
+          kind: file.kind,
+          dataURL: file.dataURL || null,
+        })),
+      },
+    ]
 
     setMessages(nextMessages)
     setInput('')
@@ -318,15 +470,22 @@ export default function Home() {
 
     try {
       const history = nextMessages.slice(-MAX_HISTORY)
+      let latestImageIndex = -1
 
-      // Send Base64 image data with the message that contains each image.
-      const apiMessages = history.map((message) => {
+      history.forEach((message, index) => {
+        if (message.role === 'user' && message.images?.length) {
+          latestImageIndex = index
+        }
+      })
+
+      const apiMessages = history.map((message, index) => {
         const apiMessage = {
           role: message.role,
-          content: message.content.slice(0, 8000),
+          content: String(message.content).slice(0, MAX_TEXT_CHARACTERS),
         }
 
-        if (message.role === 'user' && message.images?.length) {
+        // Include just the latest image-bearing turn to control request size.
+        if (index === latestImageIndex) {
           apiMessage.images = message.images.map((image) => image.base64)
         }
 
@@ -342,7 +501,9 @@ export default function Home() {
       const data = await response.json().catch(() => ({}))
 
       if (!response.ok) {
-        throw new Error(data.error || `Request failed (${response.status}).`)
+        throw new Error(
+          data.error || `Request failed (${response.status}).`
+        )
       }
 
       const reply = data.reply || data.message?.content || data.output_text
@@ -362,7 +523,8 @@ export default function Home() {
           role: 'assistant',
           isError: true,
           content:
-            `I couldn't get a response from Ollama Cloud.\n\n${error.message}\n\n` +
+            `I couldn't get a response from Ollama Cloud.\n\n` +
+            `${error.message}\n\n` +
             'Check your API key, model name, and /api/chat backend.',
         },
       ])
@@ -387,14 +549,14 @@ export default function Home() {
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
+    padding: 0,
     border: 'none',
     borderRadius: 0,
     background: 'transparent',
     color: theme.text,
-    padding: 0,
     fontFamily: 'inherit',
     cursor: 'pointer',
-    transition: 'opacity 200ms ease, color 300ms ease',
+    transition: 'opacity 200ms ease, color 250ms ease',
   }
 
   return (
@@ -489,6 +651,7 @@ export default function Home() {
           >
             {messages.length === 0 ? (
               <div
+                className="radium-in"
                 style={{
                   flex: 1,
                   display: 'flex',
@@ -498,7 +661,6 @@ export default function Home() {
                 }}
               >
                 <div
-                  className="radium-in"
                   style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -513,6 +675,7 @@ export default function Home() {
                     width="96"
                     height="96"
                     style={{
+                      display: 'block',
                       width: 96,
                       height: 96,
                       objectFit: 'contain',
@@ -565,21 +728,58 @@ export default function Home() {
                         {message.displayContent || message.content}
 
                         {message.displayAttachments?.length > 0 && (
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+                          <div
+                            style={{
+                              display: 'flex',
+                              flexWrap: 'wrap',
+                              gap: 8,
+                              marginTop: 12,
+                            }}
+                          >
                             {message.displayAttachments.map((file) => (
-                              <div key={file.id} style={{ display: 'flex', flexDirection: 'column', gap: 5, maxWidth: 150, fontSize: 12, color: theme.muted }}>
+                              <div
+                                key={file.id}
+                                style={{
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  gap: 5,
+                                  maxWidth: 150,
+                                  fontSize: 12,
+                                  color: theme.muted,
+                                }}
+                              >
                                 {file.kind === 'image' ? (
                                   <img
                                     src={file.dataURL}
                                     alt={file.name}
-                                    style={{ width: 132, height: 100, objectFit: 'cover', borderRadius: 10, border: `1px solid ${theme.border}` }}
+                                    style={{
+                                      width: 132,
+                                      height: 100,
+                                      objectFit: 'cover',
+                                      borderRadius: 10,
+                                      border: `1px solid ${theme.border}`,
+                                    }}
                                   />
                                 ) : (
-                                  <div style={{ padding: '10px 12px', border: `1px solid ${theme.border}`, borderRadius: 9, overflowWrap: 'anywhere' }}>
+                                  <div
+                                    style={{
+                                      padding: '10px 12px',
+                                      border: `1px solid ${theme.border}`,
+                                      borderRadius: 9,
+                                      overflowWrap: 'anywhere',
+                                    }}
+                                  >
                                     {file.name}
                                   </div>
                                 )}
-                                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+
+                                <span
+                                  style={{
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap',
+                                  }}
+                                >
                                   {file.name}
                                 </span>
                               </div>
@@ -605,7 +805,15 @@ export default function Home() {
                 ))}
 
                 {loading && (
-                  <div role="status" className="radium-in" style={{ margin: '8px 0 28px', fontSize: 14, color: theme.muted }}>
+                  <div
+                    role="status"
+                    className="radium-in"
+                    style={{
+                      margin: '8px 0 28px',
+                      fontSize: 14,
+                      color: theme.muted,
+                    }}
+                  >
                     Radium is thinking…
                   </div>
                 )}
@@ -636,9 +844,16 @@ export default function Home() {
                 transition: 'background-color 300ms ease, border-color 300ms ease',
               }}
             >
-              {/* Attachments and filenames stay inside the prompt box. */}
+              {/* Selected file labels and previews stay inside the prompt box. */}
               {attachments.length > 0 && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '2px 0 9px' }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: 8,
+                    padding: '2px 0 9px',
+                  }}
+                >
                   {attachments.map((file) => (
                     <div
                       key={file.id}
@@ -661,13 +876,28 @@ export default function Home() {
                         <img
                           src={file.dataURL}
                           alt={file.name}
-                          style={{ width: 42, height: 42, objectFit: 'cover', borderRadius: 6, flexShrink: 0 }}
+                          style={{
+                            width: 42,
+                            height: 42,
+                            objectFit: 'cover',
+                            borderRadius: 6,
+                            flexShrink: 0,
+                          }}
                         />
                       ) : (
-                        <span aria-hidden="true" style={{ padding: '0 4px' }}>▤</span>
+                        <span aria-hidden="true" style={{ padding: '0 4px' }}>
+                          ▤
+                        </span>
                       )}
 
-                      <span style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <span
+                        style={{
+                          maxWidth: 160,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
                         {file.name}
                       </span>
 
@@ -675,7 +905,11 @@ export default function Home() {
                         type="button"
                         aria-label={`Remove ${file.name}`}
                         onClick={() => removeAttachment(file.id)}
-                        style={{ ...plainButton, padding: '0 4px', fontSize: 18 }}
+                        style={{
+                          ...plainButton,
+                          padding: '0 4px',
+                          fontSize: 18,
+                        }}
                       >
                         ×
                       </button>
@@ -684,7 +918,6 @@ export default function Home() {
                 </div>
               )}
 
-              {/* Compact prompt row: plus, text, triangle. */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <input
                   ref={fileInputRef}
@@ -694,7 +927,7 @@ export default function Home() {
                     'image/png',
                     'image/jpeg',
                     'image/webp',
-                    ...Array.from(TEXT_EXTENSIONS).map((ext) => `.${ext}`),
+                    ...Array.from(TEXT_EXTENSIONS).map((extension) => `.${extension}`),
                     'text/*',
                   ].join(',')}
                   onChange={handleFilesSelected}
@@ -777,7 +1010,15 @@ export default function Home() {
             </div>
 
             {notice && (
-              <div role="status" style={{ marginTop: 8, fontSize: 12, color: '#E05B55', overflowWrap: 'anywhere' }}>
+              <div
+                role="status"
+                style={{
+                  marginTop: 8,
+                  fontSize: 12,
+                  color: '#E05B55',
+                  overflowWrap: 'anywhere',
+                }}
+              >
                 {notice}
               </div>
             )}
