@@ -3,11 +3,12 @@ import Head from 'next/head'
 import { useEffect, useRef, useState } from 'react'
 
 const MAX_FILES = 5
-const MAX_TEXT_FILE_BYTES = 200 * 1024
-const MAX_IMAGE_FILE_BYTES = 1.5 * 1024 * 1024
-const MAX_TOTAL_IMAGE_BYTES = 2 * 1024 * 1024
+const MAX_TEXT_FILE_SIZE = 200 * 1024
+const MAX_IMAGE_FILE_SIZE = 1.5 * 1024 * 1024
+const MAX_TOTAL_IMAGE_SIZE = 2 * 1024 * 1024
 const MAX_TOTAL_TEXT = 12000
-const MAX_HISTORY_MESSAGES = 30
+const MAX_HISTORY = 30
+const COMPOSER_MAX_LINES = 2
 
 const TEXT_EXTENSIONS = new Set([
   'txt', 'md', 'csv', 'json', 'js', 'jsx', 'ts', 'tsx',
@@ -43,18 +44,59 @@ const THEMES = {
   },
 }
 
+// Keep the prompt compact until its contents wrap.
+function resizeComposer(textarea) {
+  if (!textarea) return
+
+  textarea.style.height = 'auto'
+
+  const computed = window.getComputedStyle(textarea)
+  const lineHeight = parseFloat(computed.lineHeight) || 25.6
+  const paddingTop = parseFloat(computed.paddingTop) || 0
+  const paddingBottom = parseFloat(computed.paddingBottom) || 0
+
+  const oneLineHeight = Math.ceil(
+    lineHeight + paddingTop + paddingBottom
+  )
+
+  const maxHeight = Math.ceil(
+    lineHeight * COMPOSER_MAX_LINES +
+    paddingTop +
+    paddingBottom
+  )
+
+  const contentHeight = textarea.scrollHeight
+  const targetHeight = Math.min(
+    Math.max(oneLineHeight, contentHeight),
+    maxHeight
+  )
+
+  textarea.style.height = `${targetHeight}px`
+  textarea.style.overflowY =
+    contentHeight > maxHeight ? 'auto' : 'hidden'
+}
+
 function readAsDataURL(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
 
-    reader.onload = () => resolve(String(reader.result))
-    reader.onerror = () => reject(new Error('Could not read file'))
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result)
+      } else {
+        reject(new Error('The file could not be read.'))
+      }
+    }
+
+    reader.onerror = () => {
+      reject(new Error('The file could not be read.'))
+    }
 
     reader.readAsDataURL(file)
   })
 }
 
-function isSupportedTextFile(file) {
+function isTextFile(file) {
   const extension = file.name.split('.').pop().toLowerCase()
 
   return (
@@ -98,27 +140,35 @@ function Home() {
   const canSend =
     !loading && (input.trim().length > 0 || attachments.length > 0)
 
-  // Follow the operating system's appearance setting automatically.
-  // There is no manual theme switch.
+  // Follow the computer's light/dark appearance automatically.
   useEffect(() => {
     const preference = window.matchMedia(
       '(prefers-color-scheme: dark)'
     )
 
-    const updateTheme = (event) => setDarkMode(event.matches)
+    function updateTheme(event) {
+      setDarkMode(event.matches)
+    }
 
     setDarkMode(preference.matches)
 
     if (preference.addEventListener) {
       preference.addEventListener('change', updateTheme)
-      return () => preference.removeEventListener('change', updateTheme)
+
+      return () => {
+        preference.removeEventListener('change', updateTheme)
+      }
     }
 
-    // Compatibility with older browsers.
+    // Fallback for older browsers.
     preference.addListener(updateTheme)
-    return () => preference.removeListener(updateTheme)
+
+    return () => {
+      preference.removeListener(updateTheme)
+    }
   }, [])
 
+  // Keep the latest conversation message visible.
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({
       behavior: 'smooth',
@@ -130,6 +180,7 @@ function Home() {
     if (!notice) return undefined
 
     const timer = window.setTimeout(() => setNotice(''), 5000)
+
     return () => window.clearTimeout(timer)
   }, [notice])
 
@@ -139,36 +190,37 @@ function Home() {
 
     if (!selected.length) return
 
-    const accepted = []
-    const rejected = []
+    let remainingSlots = MAX_FILES - attachments.length
 
-    let slots = MAX_FILES - attachments.length
     let totalImageBytes = attachments
       .filter((file) => file.kind === 'image')
-      .reduce((sum, file) => sum + file.size, 0)
+      .reduce((total, file) => total + file.size, 0)
 
     let totalTextCharacters = attachments
       .filter((file) => file.kind === 'text')
-      .reduce((sum, file) => sum + file.content.length, 0)
+      .reduce((total, file) => total + file.content.length, 0)
+
+    const accepted = []
+    const rejected = []
 
     for (const file of selected) {
-      if (slots <= 0) {
+      if (remainingSlots <= 0) {
         rejected.push(`Maximum ${MAX_FILES} attachments allowed`)
         break
       }
 
       if ((file.type || '').startsWith('image/')) {
         if (!IMAGE_TYPES.has(file.type)) {
-          rejected.push(`${file.name}: use PNG, JPEG, or WebP images`)
+          rejected.push(`${file.name}: use PNG, JPEG, or WebP`)
           continue
         }
 
-        if (file.size > MAX_IMAGE_FILE_BYTES) {
-          rejected.push(`${file.name}: image must be 1.5 MB or smaller`)
+        if (file.size > MAX_IMAGE_FILE_SIZE) {
+          rejected.push(`${file.name}: image exceeds 1.5 MB`)
           continue
         }
 
-        if (totalImageBytes + file.size > MAX_TOTAL_IMAGE_BYTES) {
+        if (totalImageBytes + file.size > MAX_TOTAL_IMAGE_SIZE) {
           rejected.push('Combined image size cannot exceed 2 MB')
           continue
         }
@@ -193,7 +245,7 @@ function Home() {
           })
 
           totalImageBytes += file.size
-          slots -= 1
+          remainingSlots -= 1
         } catch {
           rejected.push(`${file.name}: could not read image`)
         }
@@ -201,26 +253,27 @@ function Home() {
         continue
       }
 
-      if (!isSupportedTextFile(file)) {
+      if (!isTextFile(file)) {
         rejected.push(`${file.name}: unsupported file type`)
         continue
       }
 
-      if (file.size > MAX_TEXT_FILE_BYTES) {
-        rejected.push(`${file.name}: file must be 200 KB or smaller`)
+      if (file.size > MAX_TEXT_FILE_SIZE) {
+        rejected.push(`${file.name}: text file exceeds 200 KB`)
         continue
       }
 
-      const remaining = MAX_TOTAL_TEXT - totalTextCharacters
+      const remainingCharacters =
+        MAX_TOTAL_TEXT - totalTextCharacters
 
-      if (remaining <= 0) {
+      if (remainingCharacters <= 0) {
         rejected.push('Combined text attachment limit reached')
         continue
       }
 
       try {
         const originalText = await file.text()
-        const content = originalText.slice(0, remaining)
+        const content = originalText.slice(0, remainingCharacters)
 
         accepted.push({
           id: `${Date.now()}-${accepted.length}-${file.name}`,
@@ -232,7 +285,7 @@ function Home() {
         })
 
         totalTextCharacters += content.length
-        slots -= 1
+        remainingSlots -= 1
       } catch {
         rejected.push(`${file.name}: could not read file`)
       }
@@ -259,31 +312,26 @@ function Home() {
     if ((!prompt && attachments.length === 0) || loading) return
 
     const filesToSend = [...attachments]
-    const imageFiles = filesToSend.filter(
-      (file) => file.kind === 'image'
-    )
-    const textFiles = filesToSend.filter(
-      (file) => file.kind === 'text'
-    )
 
     const displayContent =
       prompt ||
-      (imageFiles.length
+      (filesToSend.some((file) => file.kind === 'image')
         ? 'Please analyze the attached image(s).'
         : 'Please review the attached file(s).')
 
-    const fileContents = textFiles
+    const textContent = filesToSend
+      .filter((file) => file.kind === 'text')
       .map((file) => {
         const note = file.truncated
-          ? '\n[File content shortened to fit the attachment limit.]'
+          ? '\n[File content was shortened to fit the attachment limit.]'
           : ''
 
         return `--- File: ${file.name} ---\n${file.content}${note}`
       })
       .join('\n\n')
 
-    const content = fileContents
-      ? `${displayContent}\n\nAttached file contents:\n\n${fileContents}`
+    const content = textContent
+      ? `${displayContent}\n\nAttached file contents:\n\n${textContent}`
       : displayContent
 
     const nextMessages = [
@@ -292,17 +340,17 @@ function Home() {
         role: 'user',
         content,
         displayContent,
-        images: imageFiles.map((file) => ({
-          name: file.name,
-          mime: file.mime,
-          base64: file.base64,
-        })),
+        images: filesToSend
+          .filter((file) => file.kind === 'image')
+          .map((file) => ({
+            name: file.name,
+            base64: file.base64,
+          })),
         displayAttachments: filesToSend.map((file) => ({
           id: file.id,
           name: file.name,
           kind: file.kind,
-          mime: file.mime,
-          dataUrl: file.dataUrl,
+          dataUrl: file.dataUrl || null,
         })),
       },
     ]
@@ -314,19 +362,20 @@ function Home() {
     setNotice('')
 
     if (inputRef.current) {
-      inputRef.current.style.height = 'auto'
+      inputRef.current.value = ''
+      inputRef.current.style.height = '40px'
+      inputRef.current.style.overflowY = 'hidden'
     }
 
     try {
-      // Send only the latest image-bearing message's images.
-      // Earlier text messages remain available as conversation context.
-      const history = nextMessages.slice(-MAX_HISTORY_MESSAGES)
+      const history = nextMessages.slice(-MAX_HISTORY)
 
-      let lastImageIndex = -1
+      // Attach image data to the latest image-bearing user message.
+      let latestImageMessageIndex = -1
 
       history.forEach((message, index) => {
         if (message.role === 'user' && message.images?.length) {
-          lastImageIndex = index
+          latestImageMessageIndex = index
         }
       })
 
@@ -336,7 +385,7 @@ function Home() {
           content: message.content.slice(0, 8000),
         }
 
-        if (index === lastImageIndex) {
+        if (index === latestImageMessageIndex) {
           apiMessage.images = message.images.map(
             (image) => image.base64
           )
@@ -372,7 +421,10 @@ function Home() {
 
       setMessages((current) => [
         ...current,
-        { role: 'assistant', content: reply },
+        {
+          role: 'assistant',
+          content: reply,
+        },
       ])
     } catch (error) {
       setMessages((current) => [
@@ -381,7 +433,8 @@ function Home() {
           role: 'assistant',
           isError: true,
           content:
-            `I couldn't get a response from Ollama Cloud.\n\n${error.message}\n\n` +
+            `I couldn't get a response from Ollama Cloud.\n\n` +
+            `${error.message}\n\n` +
             'Check your API key, model name, and /api/chat backend.',
         },
       ])
@@ -413,7 +466,7 @@ function Home() {
     color: theme.text,
     cursor: 'pointer',
     fontFamily: 'inherit',
-    transition: 'color 300ms cubic-bezier(.22,1,.36,1), opacity 250ms ease',
+    transition: 'color 250ms ease, opacity 250ms ease',
   }
 
   return (
@@ -460,19 +513,13 @@ function Home() {
           box-sizing: border-box;
         }
 
-        html {
-          scroll-behavior: smooth;
+        body {
+          font-family: Roboto, Arial, sans-serif;
         }
 
-        textarea,
-        button {
+        button,
+        textarea {
           font: inherit;
-        }
-
-        button:focus-visible,
-        textarea:focus-visible {
-          outline: 2px solid currentColor;
-          outline-offset: 3px;
         }
 
         .radium-message {
@@ -481,7 +528,6 @@ function Home() {
 
         .radium-preview {
           animation: radium-appear 360ms cubic-bezier(.22, 1, .36, 1) both;
-          transition: opacity 250ms ease, transform 350ms cubic-bezier(.22, 1, .36, 1);
         }
 
         @keyframes radium-appear {
@@ -489,6 +535,7 @@ function Home() {
             opacity: 0;
             transform: translateY(8px);
           }
+
           to {
             opacity: 1;
             transform: translateY(0);
@@ -501,8 +548,8 @@ function Home() {
           *::after {
             animation-duration: .01ms !important;
             animation-iteration-count: 1 !important;
-            scroll-behavior: auto !important;
             transition-duration: .01ms !important;
+            scroll-behavior: auto !important;
           }
         }
       `}</style>
@@ -518,17 +565,19 @@ function Home() {
           background: theme.page,
           color: theme.text,
           fontFamily: 'Roboto, Arial, sans-serif',
-          transition: 'background-color 420ms cubic-bezier(.22,1,.36,1), color 420ms cubic-bezier(.22,1,.36,1)',
+          transition:
+            'background-color 350ms ease, color 350ms ease',
         }}
       >
+        {/* Conversation window */}
         <section
           aria-label="Conversation"
           style={{
             flex: 1,
             minHeight: 0,
             overflowY: 'auto',
-            padding: '24px 20px',
             overscrollBehavior: 'contain',
+            padding: '24px 20px',
           }}
         >
           <div
@@ -549,7 +598,8 @@ function Home() {
                   alignItems: 'center',
                   justifyContent: 'center',
                   padding: '30px 12px',
-                  animation: 'radium-appear 650ms cubic-bezier(.22,1,.36,1) both',
+                  animation:
+                    'radium-appear 600ms cubic-bezier(.22,1,.36,1) both',
                 }}
               >
                 <div
@@ -576,7 +626,6 @@ function Home() {
                       height: 96,
                       objectFit: 'contain',
                       flexShrink: 0,
-                      transition: 'opacity 350ms ease',
                     }}
                   />
 
@@ -589,7 +638,6 @@ function Home() {
                       letterSpacing: '-1.2px',
                       fontWeight: 400,
                       color: theme.text,
-                      transition: 'color 420ms cubic-bezier(.22,1,.36,1)',
                     }}
                   >
                     Radium
@@ -622,7 +670,6 @@ function Home() {
                           lineHeight: 1.7,
                           whiteSpace: 'pre-wrap',
                           overflowWrap: 'anywhere',
-                          transition: 'background-color 420ms cubic-bezier(.22,1,.36,1)',
                         }}
                       >
                         {message.displayContent || message.content}
@@ -693,7 +740,6 @@ function Home() {
                       <div
                         style={{
                           width: '100%',
-                          maxWidth: '100%',
                           fontSize: 15,
                           lineHeight: 1.85,
                           whiteSpace: 'pre-wrap',
@@ -727,14 +773,14 @@ function Home() {
           </div>
         </section>
 
-        {/* Composer */}
+        {/* Message composer */}
         <footer
           style={{
             flexShrink: 0,
             width: '100%',
             padding: '12px 18px 22px',
             background: theme.page,
-            transition: 'background-color 420ms cubic-bezier(.22,1,.36,1)',
+            transition: 'background-color 350ms ease',
           }}
         >
           <div
@@ -750,11 +796,12 @@ function Home() {
                 border: `1px solid ${theme.border}`,
                 borderRadius: 26,
                 background: theme.composer,
-                padding: '13px 15px 10px 17px',
+                padding: '10px 15px 9px 17px',
                 boxShadow: darkMode
                   ? '0 2px 12px rgba(0,0,0,.08)'
                   : '0 2px 10px rgba(0,0,0,.045)',
-                transition: 'background-color 420ms cubic-bezier(.22,1,.36,1), border-color 420ms cubic-bezier(.22,1,.36,1), box-shadow 420ms ease',
+                transition:
+                  'background-color 350ms ease, border-color 350ms ease, box-shadow 350ms ease',
               }}
             >
               {attachments.length > 0 && (
@@ -830,16 +877,15 @@ function Home() {
                         onClick={() => removeAttachment(file.id)}
                         style={{
                           position: 'absolute',
-                          top: -7,
-                          right: -7,
-                          width: 22,
-                          height: 22,
-                          border: `1px solid ${theme.border}`,
-                          borderRadius: '50%',
-                          background: theme.composer,
+                          top: -5,
+                          right: -5,
+                          border: 'none',
+                          background: 'transparent',
                           color: theme.text,
-                          cursor: 'pointer',
+                          fontSize: 19,
                           lineHeight: 1,
+                          padding: 0,
+                          cursor: 'pointer',
                         }}
                       >
                         ×
@@ -852,23 +898,22 @@ function Home() {
               <textarea
                 ref={inputRef}
                 value={input}
-                onChange={(event) => {
-                  setInput(event.target.value)
-                  event.target.style.height = 'auto'
-                  event.target.style.height =
-                    `${Math.min(event.target.scrollHeight, 180)}px`
-                }}
-                onKeyDown={handleKeyDown}
+                rows={1}
                 placeholder="Type here"
                 aria-label="Type here"
-                rows={1}
+                onChange={(event) => {
+                  setInput(event.target.value)
+                  resizeComposer(event.currentTarget)
+                }}
+                onKeyDown={handleKeyDown}
                 style={{
                   display: 'block',
                   width: '100%',
-                  minHeight: 36,
-                  maxHeight: 180,
+                  height: '40px',
+                  minHeight: '40px',
+                  maxHeight: '66px',
                   resize: 'none',
-                  overflowY: 'auto',
+                  overflowY: 'hidden',
                   border: 'none',
                   outline: 'none',
                   boxShadow: 'none',
@@ -879,6 +924,7 @@ function Home() {
                   lineHeight: 1.6,
                   padding: '5px 0 9px',
                   boxSizing: 'border-box',
+                  transition: 'height 140ms ease',
                 }}
               />
 
@@ -888,7 +934,7 @@ function Home() {
                   alignItems: 'center',
                   justifyContent: 'flex-end',
                   gap: 14,
-                  paddingTop: 2,
+                  paddingTop: 3,
                 }}
               >
                 <input
@@ -908,32 +954,41 @@ function Home() {
                   style={{ display: 'none' }}
                 />
 
-                {/* Plain plus sign, positioned next to Send. */}
+                {/* Plain plus sign: no circle or border. */}
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  disabled={loading || attachments.length >= MAX_FILES}
+                  disabled={
+                    loading || attachments.length >= MAX_FILES
+                  }
                   aria-label="Attach files or images"
                   title="Attach files or images"
                   style={{
-                    ...iconButtonStyle,
+                    ...{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      border: 'none',
+                      background: 'transparent',
+                      color: theme.text,
+                      cursor: 'pointer',
+                      fontFamily: 'inherit',
+                    },
                     width: 36,
                     height: 36,
+                    padding: 0,
                     fontSize: 29,
                     fontWeight: 300,
                     lineHeight: 1,
                     opacity:
                       loading || attachments.length >= MAX_FILES ? 0.4 : 1,
-                    cursor:
-                      loading || attachments.length >= MAX_FILES
-                        ? 'not-allowed'
-                        : 'pointer',
+                    transition: 'opacity 220ms ease, color 300ms ease',
                   }}
                 >
                   +
                 </button>
 
-                {/* Outlined equilateral triangle; no circular background. */}
+                {/* Thin outlined triangular send control. */}
                 <button
                   type="button"
                   onClick={sendMessage}
@@ -941,11 +996,19 @@ function Home() {
                   aria-label="Send message"
                   title="Send message"
                   style={{
-                    ...iconButtonStyle,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
                     width: 36,
                     height: 36,
-                    opacity: canSend ? 1 : 0.45,
+                    padding: 0,
+                    border: 'none',
+                    borderRadius: 0,
+                    background: 'transparent',
+                    color: theme.text,
+                    opacity: canSend ? 1 : 0.4,
                     cursor: canSend ? 'pointer' : 'not-allowed',
+                    transition: 'opacity 220ms ease, color 300ms ease',
                   }}
                 >
                   <SendTriangle color={theme.text} />
