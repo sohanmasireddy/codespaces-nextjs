@@ -2,26 +2,30 @@
 export const config = {
   api: {
     bodyParser: {
-      sizeLimit: '50mb',
+      sizeLimit: '4mb',
     },
   },
 }
 
-const MAX_MESSAGES = 30
-const MAX_MESSAGE_CHARS = 8000
+const MAX_MESSAGES = 12
+const MAX_MESSAGE_CHARS = 5000
 const MAX_IMAGES = 5
-const MAX_BASE64_CHARS = 1_500_000
+const MAX_BASE64_CHARS = 3_600_000
 
 function isBase64(value) {
-  return typeof value === 'string' &&
+  return (
+    typeof value === 'string' &&
     value.length > 0 &&
     /^[A-Za-z0-9+/]+={0,2}$/.test(value)
+  )
 }
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST')
-    return res.status(405).json({ error: 'Method not allowed.' })
+    return res.status(405).json({
+      error: 'Method not allowed. Use POST.',
+    })
   }
 
   const apiKey = process.env.OLLAMA_API_KEY
@@ -36,7 +40,9 @@ export default async function handler(req, res) {
   const incoming = req.body?.messages
 
   if (!Array.isArray(incoming) || incoming.length === 0) {
-    return res.status(400).json({ error: 'No chat messages were provided.' })
+    return res.status(400).json({
+      error: 'No chat messages were provided.',
+    })
   }
 
   const messages = incoming
@@ -50,13 +56,16 @@ export default async function handler(req, res) {
     .map((message) => ({
       role: message.role,
       content: message.content.slice(0, MAX_MESSAGE_CHARS),
-      images: message.role === 'user' && Array.isArray(message.images)
-        ? message.images
-        : [],
+      images:
+        message.role === 'user' && Array.isArray(message.images)
+          ? message.images
+          : [],
     }))
 
   if (!messages.length) {
-    return res.status(400).json({ error: 'No valid chat messages were provided.' })
+    return res.status(400).json({
+      error: 'No valid chat messages were provided.',
+    })
   }
 
   let totalImageCharacters = 0
@@ -66,14 +75,14 @@ export default async function handler(req, res) {
 
     if (message.images.length > MAX_IMAGES) {
       return res.status(400).json({
-        error: `You can attach up to ${MAX_IMAGES} images per request.`,
+        error: `You can attach up to ${MAX_IMAGES} images in one message.`,
       })
     }
 
     for (const image of message.images) {
       if (!isBase64(image)) {
         return res.status(400).json({
-          error: 'Image data was not encoded correctly. Please attach it again.',
+          error: 'An image was not encoded correctly. Please attach it again.',
         })
       }
 
@@ -83,7 +92,7 @@ export default async function handler(req, res) {
 
   if (totalImageCharacters > MAX_BASE64_CHARS) {
     return res.status(413).json({
-      error: 'Images are too large to send together. Please use smaller images.',
+      error: 'The compressed images are too large for one request. Remove an image and try again.',
     })
   }
 
@@ -93,7 +102,7 @@ export default async function handler(req, res) {
       content: message.content,
     }
 
-    if (message.images.length > 0) {
+    if (message.images.length) {
       result.images = message.images
     }
 
@@ -117,11 +126,16 @@ export default async function handler(req, res) {
     const data = await response.json().catch(() => ({}))
 
     if (!response.ok) {
-      console.error('Ollama error:', response.status, data.error || 'Unknown error')
+      console.error(
+        'Ollama Cloud error:',
+        response.status,
+        data.error || 'Unknown error'
+      )
 
       return res.status(502).json({
-        error: data.error ||
-          `Ollama Cloud returned HTTP ${response.status}. Check your model and API access.`,
+        error:
+          data.error ||
+          `Ollama Cloud returned HTTP ${response.status}.`,
       })
     }
 
@@ -135,7 +149,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({ reply })
   } catch (error) {
-    console.error('Ollama connection error:', error)
+    console.error('Ollama Cloud connection error:', error)
 
     return res.status(502).json({
       error: 'Could not connect to Ollama Cloud. Please try again.',
