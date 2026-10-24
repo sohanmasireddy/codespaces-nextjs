@@ -9,10 +9,10 @@ export const config = {
 
 const MAX_MESSAGES = 30
 const MAX_MESSAGE_CHARS = 8000
-const MAX_IMAGES_PER_MESSAGE = 5
-const MAX_TOTAL_IMAGE_BASE64_CHARS = 2_850_000
+const MAX_IMAGES = 5
+const MAX_BASE64_CHARS = 2_200_000
 
-function isValidBase64(value) {
+function isBase64(value) {
   return (
     typeof value === 'string' &&
     value.length > 0 &&
@@ -33,19 +33,19 @@ export default async function handler(req, res) {
 
   if (!apiKey) {
     return res.status(500).json({
-      error: 'OLLAMA_API_KEY is missing from the server environment.',
+      error: 'OLLAMA_API_KEY is not configured on the server.',
     })
   }
 
-  const incomingMessages = req.body?.messages
+  const incoming = req.body?.messages
 
-  if (!Array.isArray(incomingMessages) || incomingMessages.length === 0) {
+  if (!Array.isArray(incoming) || incoming.length === 0) {
     return res.status(400).json({
       error: 'Send at least one chat message.',
     })
   }
 
-  const messages = incomingMessages
+  const messages = incoming
     .filter(
       (message) =>
         message &&
@@ -68,40 +68,37 @@ export default async function handler(req, res) {
     })
   }
 
-  // Only send images from the most recent image-bearing message.
-  // This keeps follow-up questions grounded without resending every image.
-  let lastImageIndex = -1
+  // Only forward images from the latest image-bearing message.
+  let latestImageIndex = -1
 
-  for (let i = 0; i < messages.length; i += 1) {
-    if (messages[i].images.length > 0) {
-      lastImageIndex = i
-    }
-  }
+  messages.forEach((message, index) => {
+    if (message.images.length > 0) latestImageIndex = index
+  })
 
-  let totalImageCharacters = 0
+  if (latestImageIndex !== -1) {
+    const images = messages[latestImageIndex].images
 
-  if (lastImageIndex !== -1) {
-    const images = messages[lastImageIndex].images
-
-    if (images.length > MAX_IMAGES_PER_MESSAGE) {
+    if (images.length > MAX_IMAGES) {
       return res.status(400).json({
-        error: `You can send at most ${MAX_IMAGES_PER_MESSAGE} images at once.`,
+        error: `You can attach up to ${MAX_IMAGES} images per message.`,
       })
     }
 
-    for (const image of images) {
-      if (!isValidBase64(image)) {
-        return res.status(400).json({
-          error: 'An image was not encoded correctly. Try attaching it again.',
-        })
-      }
+    const validImages = images.every(isBase64)
+    const totalImageCharacters = images.reduce(
+      (total, image) => total + (typeof image === 'string' ? image.length : 0),
+      0
+    )
 
-      totalImageCharacters += image.length
+    if (!validImages) {
+      return res.status(400).json({
+        error: 'An image was not encoded correctly. Please attach it again.',
+      })
     }
 
-    if (totalImageCharacters > MAX_TOTAL_IMAGE_BASE64_CHARS) {
+    if (totalImageCharacters > MAX_BASE64_CHARS) {
       return res.status(413).json({
-        error: 'The images are too large. Please use smaller images.',
+        error: 'The combined images are too large. Try smaller images.',
       })
     }
   }
@@ -112,7 +109,7 @@ export default async function handler(req, res) {
       content: message.content,
     }
 
-    if (index === lastImageIndex) {
+    if (index === latestImageIndex) {
       result.images = message.images
     }
 
@@ -137,15 +134,15 @@ export default async function handler(req, res) {
 
     if (!response.ok) {
       console.error(
-        'Ollama Cloud request failed:',
+        'Ollama Cloud error:',
         response.status,
-        data.error || 'Unknown API error'
+        data.error || 'Unknown error'
       )
 
       return res.status(502).json({
         error:
           data.error ||
-          `Ollama Cloud returned HTTP ${response.status}. Check your model and API access.`,
+          `Ollama Cloud returned HTTP ${response.status}.`,
       })
     }
 
@@ -162,8 +159,7 @@ export default async function handler(req, res) {
     console.error('Ollama Cloud connection error:', error)
 
     return res.status(502).json({
-      error:
-        'Could not reach Ollama Cloud. Check the network and try again.',
+      error: 'Could not reach Ollama Cloud. Check your network and try again.',
     })
   }
 }
