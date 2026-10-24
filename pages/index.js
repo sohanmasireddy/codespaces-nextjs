@@ -7,9 +7,10 @@ const MAX_FILE_SIZE = 200 * 1024
 const MAX_TOTAL_TEXT = 12000
 
 const TEXT_EXTENSIONS = new Set([
-  'txt', 'md', 'csv', 'json', 'js', 'jsx', 'ts', 'tsx', 'py', 'html',
-  'css', 'xml', 'yaml', 'yml', 'log', 'sql', 'sh', 'toml', 'ini', 'c',
-  'cpp', 'h', 'hpp', 'java', 'go', 'rs', 'php', 'rb', 'swift', 'kt',
+  'txt', 'md', 'csv', 'json', 'js', 'jsx', 'ts', 'tsx',
+  'py', 'html', 'css', 'xml', 'yaml', 'yml', 'log',
+  'sql', 'sh', 'toml', 'ini', 'c', 'cpp', 'h', 'hpp',
+  'java', 'go', 'rs', 'php', 'rb', 'swift', 'kt',
 ])
 
 const THEMES = {
@@ -20,7 +21,7 @@ const THEMES = {
     border: '#E5E5E5',
     bubble: '#F4F4F4',
     composer: '#FFFFFF',
-    send: '#252525',
+    send: '#262626',
     sendText: '#FFFFFF',
   },
   dark: {
@@ -126,18 +127,18 @@ export default function Home() {
   const canSend =
     !loading && (input.trim().length > 0 || attachments.length > 0)
 
-  // Restore the selected theme when the page opens.
+  // Restore the saved theme after the page loads.
   useEffect(() => {
     try {
       setDarkMode(
         window.localStorage.getItem('radium-theme') === 'dark'
       )
     } catch {
-      // Use light mode if browser storage is unavailable.
+      // Keep light mode if browser storage is unavailable.
     }
   }, [])
 
-  // Keep the newest message visible.
+  // Scroll down when new messages arrive.
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({
       behavior: 'smooth',
@@ -162,7 +163,7 @@ export default function Home() {
           next ? 'dark' : 'light'
         )
       } catch {
-        // The theme still changes for the current session.
+        // The current page can still change themes.
       }
 
       return next
@@ -186,30 +187,24 @@ export default function Home() {
 
     for (const file of selected) {
       if (slots <= 0) {
-        rejected.push(
-          `${file.name}: you can attach up to ${MAX_FILES} files`
-        )
+        rejected.push(`Maximum ${MAX_FILES} files allowed`)
         continue
       }
 
       if (!isSupportedTextFile(file)) {
-        rejected.push(
-          `${file.name}: this file type is not supported yet`
-        )
+        rejected.push(`${file.name}: unsupported file type`)
         continue
       }
 
       if (file.size > MAX_FILE_SIZE) {
-        rejected.push(`${file.name}: file must be 200 KB or smaller`)
+        rejected.push(`${file.name}: file exceeds 200 KB`)
         continue
       }
 
       const remaining = MAX_TOTAL_TEXT - totalCharacters
 
       if (remaining <= 0) {
-        rejected.push(
-          `${file.name}: the combined text limit has been reached`
-        )
+        rejected.push('The combined attachment text limit was reached')
         continue
       }
 
@@ -227,7 +222,7 @@ export default function Home() {
         totalCharacters += content.length
         slots -= 1
       } catch {
-        rejected.push(`${file.name}: couldn't read this file`)
+        rejected.push(`${file.name}: could not read file`)
       }
     }
 
@@ -236,7 +231,7 @@ export default function Home() {
     }
 
     if (rejected.length) {
-      setNotice(`Some files weren't added: ${rejected.join('; ')}`)
+      setNotice(rejected.join(' · '))
     }
   }
 
@@ -258,7 +253,7 @@ export default function Home() {
     const fileContents = filesToSend
       .map((file) => {
         const note = file.truncated
-          ? '\n[File content was shortened to fit the attachment limit.]'
+          ? '\n[File content shortened to fit the attachment limit.]'
           : ''
 
         return `--- File: ${file.name} ---\n${file.content}${note}`
@@ -296,12 +291,10 @@ export default function Home() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          messages: nextMessages.map(
-            ({ role, content: messageContent }) => ({
-              role,
-              content: messageContent,
-            })
-          ),
+          messages: nextMessages.map(({ role, content: messageContent }) => ({
+            role,
+            content: messageContent,
+          })),
         }),
       })
 
@@ -335,7 +328,7 @@ export default function Home() {
           isError: true,
           content:
             `I couldn't connect to Ollama Cloud.\n\n${error.message}\n\n` +
-            'Check your /api/chat backend and the environment variables in Vercel.',
+            'Check your /api/chat backend and your Vercel environment variables.',
         },
       ])
     } finally {
@@ -355,15 +348,15 @@ export default function Home() {
     }
   }
 
-  const iconButton = {
-    border: 'none',
-    background: 'transparent',
-    color: theme.text,
+  const iconButtonStyle = {
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
-    cursor: 'pointer',
     padding: 6,
+    border: 'none',
+    background: 'transparent',
+    color: theme.text,
+    cursor: 'pointer',
     fontFamily: 'inherit',
   }
 
@@ -374,15 +367,21 @@ export default function Home() {
         <meta name="application-name" content="Radium" />
         <meta name="theme-color" content={theme.page} />
 
+        <link rel="icon" type="image/png" href={
+          darkMode
+            ? '/radium-logo-dark.png'
+            : '/radium-logo.png'
+        } />
+
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link
-          key="radium-favicon"
-          rel="icon"
-          type="image/png"
-          href={
-            darkMode
-              ? '/radium-logo-dark.png'
-              : '/radium-logo.png'
-          }
+          rel="preconnect"
+          href="https://fonts.gstatic.com"
+          crossOrigin="anonymous"
+        />
+        <link
+          href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500&display=swap"
+          rel="stylesheet"
         />
       </Head>
 
@@ -397,20 +396,18 @@ export default function Home() {
           overflow: 'hidden',
           background: theme.page,
           color: theme.text,
-          fontFamily: 'Arial, Helvetica, sans-serif',
+          fontFamily: 'Roboto, Arial, sans-serif',
           transition: 'background 160ms ease, color 160ms ease',
         }}
       >
-        {/* Theme toggle, without a button border or circle. */}
+        {/* Simple theme switch with no button circle. */}
         <button
           type="button"
           onClick={toggleTheme}
-          aria-label={
-            darkMode ? 'Switch to light mode' : 'Switch to dark mode'
-          }
+          aria-label={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
           title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
           style={{
-            ...iconButton,
+            ...iconButtonStyle,
             position: 'absolute',
             top: 14,
             right: 18,
@@ -424,7 +421,7 @@ export default function Home() {
           <span>{darkMode ? 'Light mode' : 'Dark mode'}</span>
         </button>
 
-        {/* Conversation */}
+        {/* Main conversation area. */}
         <section
           aria-label="Conversation"
           style={{
@@ -454,6 +451,7 @@ export default function Home() {
                   padding: '30px 12px',
                 }}
               >
+                {/* The logo switches to its inverted version in dark mode. */}
                 <div
                   style={{
                     display: 'flex',
@@ -468,24 +466,26 @@ export default function Home() {
                         ? '/radium-logo-dark.png'
                         : '/radium-logo.png'
                     }
-                    alt=""
-                    width="48"
-                    height="48"
+                    alt="Radium logo"
+                    width="96"
+                    height="96"
                     style={{
                       display: 'block',
-                      width: 48,
-                      height: 48,
+                      width: 96,
+                      height: 96,
                       objectFit: 'contain',
+                      flexShrink: 0,
                     }}
                   />
 
                   <h1
                     style={{
                       margin: 0,
+                      fontFamily: 'Roboto, Arial, sans-serif',
                       fontSize: 'clamp(34px, 5vw, 43px)',
                       lineHeight: 1.15,
-                      letterSpacing: '-1.8px',
-                      fontWeight: 600,
+                      letterSpacing: '-1.2px',
+                      fontWeight: 400,
                       color: theme.text,
                     }}
                   >
@@ -589,7 +589,7 @@ export default function Home() {
           </div>
         </section>
 
-        {/* Composer */}
+        {/* Prompt box. */}
         <footer
           style={{
             flexShrink: 0,
@@ -662,7 +662,7 @@ export default function Home() {
                         aria-label={`Remove ${file.name}`}
                         onClick={() => removeAttachment(file.id)}
                         style={{
-                          ...iconButton,
+                          ...iconButtonStyle,
                           padding: 0,
                           fontSize: 18,
                           color: theme.muted,
@@ -700,7 +700,7 @@ export default function Home() {
                   boxShadow: 'none',
                   background: 'transparent',
                   color: theme.text,
-                  fontFamily: 'inherit',
+                  fontFamily: 'Roboto, Arial, sans-serif',
                   fontSize: 16,
                   lineHeight: 1.6,
                   padding: '5px 0 9px',
@@ -746,7 +746,7 @@ export default function Home() {
                     aria-label="Add files"
                     title="Add files"
                     style={{
-                      ...iconButton,
+                      ...iconButtonStyle,
                       width: 32,
                       height: 32,
                       padding: 0,
@@ -765,12 +765,7 @@ export default function Home() {
                     +
                   </button>
 
-                  <span
-                    style={{
-                      fontSize: 12,
-                      color: theme.muted,
-                    }}
-                  >
+                  <span style={{ fontSize: 12, color: theme.muted }}>
                     Add files
                   </span>
                 </div>
