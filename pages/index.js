@@ -211,7 +211,7 @@
         fontSize: 12,
         color: '#E05B55',
         overflowWrap: 'anywhere',
-      }}
+      }} 
     >
       {notice}
     </div>
