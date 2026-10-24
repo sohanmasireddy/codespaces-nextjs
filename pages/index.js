@@ -1,219 +1,913 @@
 
-<div
-  style={{
-    width: '100%',
-    maxWidth: 768,
-    margin: '0 auto',
-  }}
->
-  <div
-    style={{
-      display: 'flex',
-      alignItems: 'center',
-      gap: 10,
-      width: '100%',
-      minHeight: 52,
-      padding: '5px 10px',
-      border: `1px solid ${theme.border}`,
-      borderRadius: 28,
-      background: theme.composer,
-      boxSizing: 'border-box',
-      transition:
-        'background-color 300ms ease, border-color 300ms ease',
-    }}
-  >
-    {/* Hidden file picker */}
-    <input
-      ref={fileInputRef}
-      type="file"
-      multiple
-      accept={[
-        'image/png',
-        'image/jpeg',
-        'image/webp',
-        ...Array.from(TEXT_EXTENSIONS).map((ext) => `.${ext}`),
-        'text/*',
-      ].join(',')}
-      onChange={handleFilesSelected}
-      style={{ display: 'none' }}
-    />
+import Head from 'next/head'
+import { useEffect, useRef, useState } from 'react'
 
-    {/* Upload button: inside the prompt, on the left */}
-    <button
-      type="button"
-      onClick={() => fileInputRef.current?.click()}
-      disabled={loading || attachments.length >= MAX_FILES}
-      aria-label="Attach files or images"
-      title="Attach files or images"
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        flexShrink: 0,
-        width: 30,
-        height: 36,
-        padding: 0,
-        border: 'none',
-        background: 'transparent',
-        color: theme.text,
-        fontSize: 27,
-        fontWeight: 300,
-        lineHeight: 1,
-        cursor:
-          loading || attachments.length >= MAX_FILES
-            ? 'not-allowed'
-            : 'pointer',
-        opacity:
-          loading || attachments.length >= MAX_FILES ? 0.4 : 1,
-      }}
+const MAX_FILES = 5
+const MAX_TEXT_FILE_BYTES = 200 * 1024
+const MAX_IMAGE_FILE_BYTES = 1024 * 1024
+const MAX_TOTAL_IMAGE_BYTES = 1536 * 1024
+const MAX_TOTAL_TEXT = 12000
+const MAX_HISTORY = 30
+const COMPOSER_MAX_LINES = 2
+
+const TEXT_EXTENSIONS = new Set([
+  'txt', 'md', 'csv', 'json', 'js', 'jsx', 'ts', 'tsx', 'py', 'html',
+  'css', 'xml', 'yaml', 'yml', 'log', 'sql', 'sh', 'toml', 'ini', 'c',
+  'cpp', 'h', 'hpp', 'java', 'go', 'rs', 'php', 'rb', 'swift', 'kt',
+])
+
+const IMAGE_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+])
+
+const THEMES = {
+  light: {
+    page: '#FFFFFF',
+    text: '#262626',
+    muted: '#777777',
+    border: '#E5E5E5',
+    bubble: '#F4F4F4',
+    composer: '#FFFFFF',
+  },
+  dark: {
+    page: '#212121',
+    text: '#F4F4F4',
+    muted: '#AAAAAA',
+    border: '#454545',
+    bubble: '#303030',
+    composer: '#303030',
+  },
+}
+
+function resizeComposer(textarea) {
+  if (!textarea) return
+
+  textarea.style.height = 'auto'
+
+  const style = window.getComputedStyle(textarea)
+  const lineHeight = Number.parseFloat(style.lineHeight) || 24
+  const padding =
+    (Number.parseFloat(style.paddingTop) || 0) +
+    (Number.parseFloat(style.paddingBottom) || 0)
+
+  const minHeight = lineHeight + padding
+  const maxHeight = lineHeight * COMPOSER_MAX_LINES + padding
+  const contentHeight = textarea.scrollHeight
+
+  textarea.style.height =
+    `${Math.min(Math.max(minHeight, contentHeight), maxHeight)}px`
+
+  textarea.style.overflowY =
+    contentHeight > maxHeight ? 'auto' : 'hidden'
+}
+
+function readAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result)
+      } else {
+        reject(new Error('The file could not be read.'))
+      }
+    }
+
+    reader.onerror = () => reject(new Error('The file could not be read.'))
+    reader.readAsDataURL(file)
+  })
+}
+
+function isTextFile(file) {
+  const extension = file.name.split('.').pop().toLowerCase()
+
+  return (
+    TEXT_EXTENSIONS.has(extension) ||
+    (file.type || '').startsWith('text/')
+  )
+}
+
+function SendTriangle({ color }) {
+  return (
+    <svg
+      width="23"
+      height="23"
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
     >
-      +
-    </button>
+      <path
+        d="M12 4 L19.15 16.38 L4.85 16.38 Z"
+        stroke={color}
+        strokeWidth="1.65"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
 
-    {/* Compact prompt: one line initially, two when text wraps */}
-    <textarea
-      ref={inputRef}
-      value={input}
-      rows={1}
-      placeholder="Type here"
-      aria-label="Type here"
-      onChange={(event) => {
-        setInput(event.target.value)
-        resizeComposer(event.currentTarget)
-      }}
-      onKeyDown={handleKeyDown}
-      style={{
-        flex: 1,
-        minWidth: 0,
-        display: 'block',
-        height: 40,
-        minHeight: 40,
-        maxHeight: 66,
-        margin: 0,
-        padding: '8px 0',
-        resize: 'none',
-        overflowY: 'hidden',
-        border: 'none',
-        outline: 'none',
-        boxShadow: 'none',
-        background: 'transparent',
-        color: theme.text,
-        fontFamily: 'Roboto, Arial, sans-serif',
-        fontSize: 16,
-        lineHeight: '24px',
-        boxSizing: 'border-box',
-      }}
-    />
+export default function Home() {
+  const [messages, setMessages] = useState([])
+  const [input, setInput] = useState('')
+  const [attachments, setAttachments] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [notice, setNotice] = useState('')
+  const [darkMode, setDarkMode] = useState(false)
 
-    {/* Outlined triangle: inside the prompt, on the right */}
-    <button
-      type="button"
-      onClick={sendMessage}
-      disabled={!canSend}
-      aria-label="Send message"
-      title="Send message"
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        flexShrink: 0,
-        width: 32,
-        height: 36,
-        padding: 0,
-        border: 'none',
-        borderRadius: 0,
-        background: 'transparent',
-        color: theme.text,
-        opacity: canSend ? 1 : 0.4,
-        cursor: canSend ? 'pointer' : 'not-allowed',
-        transition: 'opacity 180ms ease, color 250ms ease',
-      }}
-    >
-      <SendTriangle color={theme.text} />
-    </button>
-  </div>
+  const inputRef = useRef(null)
+  const fileInputRef = useRef(null)
+  const messagesEndRef = useRef(null)
 
-  {/* Attachment previews appear only when files are selected */}
-  {attachments.length > 0 && (
-    <div
-      style={{
-        display: 'flex',
-        flexWrap: 'wrap',
-        gap: 10,
-        marginTop: 10,
-      }}
-    >
-      {attachments.map((file) => (
-        <div
-          key={file.id}
+  const theme = darkMode ? THEMES.dark : THEMES.light
+  const canSend =
+    !loading && (input.trim().length > 0 || attachments.length > 0)
+
+  // Follow the computer's light or dark appearance automatically.
+  useEffect(() => {
+    const preference = window.matchMedia('(prefers-color-scheme: dark)')
+    const updateTheme = (event) => setDarkMode(event.matches)
+
+    setDarkMode(preference.matches)
+
+    if (preference.addEventListener) {
+      preference.addEventListener('change', updateTheme)
+      return () => preference.removeEventListener('change', updateTheme)
+    }
+
+    preference.addListener(updateTheme)
+    return () => preference.removeListener(updateTheme)
+  }, [])
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'end',
+    })
+  }, [messages, loading])
+
+  useEffect(() => {
+    if (!notice) return undefined
+
+    const timer = window.setTimeout(() => setNotice(''), 5000)
+    return () => window.clearTimeout(timer)
+  }, [notice])
+
+  async function handleFilesSelected(event) {
+    const selected = Array.from(event.target.files || [])
+    event.target.value = ''
+
+    if (!selected.length) return
+
+    let availableSlots = MAX_FILES - attachments.length
+
+    let totalImageBytes = attachments
+      .filter((file) => file.kind === 'image')
+      .reduce((total, file) => total + file.size, 0)
+
+    let totalTextCharacters = attachments
+      .filter((file) => file.kind === 'text')
+      .reduce((total, file) => total + file.content.length, 0)
+
+    const accepted = []
+    const rejected = []
+
+    for (const file of selected) {
+      if (availableSlots <= 0) {
+        rejected.push(`Maximum ${MAX_FILES} attachments allowed`)
+        break
+      }
+
+      if ((file.type || '').startsWith('image/')) {
+        if (!IMAGE_TYPES.has(file.type)) {
+          rejected.push(`${file.name}: use PNG, JPEG, or WebP images`)
+          continue
+        }
+
+        if (file.size > MAX_IMAGE_FILE_SIZE) {
+          rejected.push(`${file.name}: image must be 1 MB or smaller`)
+          continue
+        }
+
+        if (totalImageBytes + file.size > MAX_TOTAL_IMAGE_BYTES) {
+          rejected.push('Combined image size cannot exceed 1.5 MB')
+          continue
+        }
+
+        try {
+          const dataUrl = await readAsDataURL(file)
+          const base64 = dataUrl.split(',')[1]
+
+          if (!base64) {
+            rejected.push(`${file.name}: invalid image data`)
+            continue
+          }
+
+          accepted.push({
+            id: `${Date.now()}-${accepted.length}-${file.name}`,
+            name: file.name,
+            kind: 'image',
+            mime: file.type,
+            size: file.size,
+            base64,
+            dataUrl,
+          })
+
+          totalImageBytes += file.size
+          availableSlots -= 1
+        } catch {
+          rejected.push(`${file.name}: could not read image`)
+        }
+
+        continue
+      }
+
+      if (!isTextFile(file)) {
+        rejected.push(`${file.name}: unsupported file type`)
+        continue
+      }
+
+      if (file.size > MAX_TEXT_FILE_BYTES) {
+        rejected.push(`${file.name}: text file must be 200 KB or smaller`)
+        continue
+      }
+
+      const remainingCharacters = MAX_TOTAL_TEXT - totalTextCharacters
+
+      if (remainingCharacters <= 0) {
+        rejected.push('Combined text attachment limit reached')
+        continue
+      }
+
+      try {
+        const originalText = await file.text()
+        const content = originalText.slice(0, remainingCharacters)
+
+        accepted.push({
+          id: `${Date.now()}-${accepted.length}-${file.name}`,
+          name: file.name,
+          kind: 'text',
+          size: file.size,
+          content,
+          truncated: originalText.length > content.length,
+        })
+
+        totalTextCharacters += content.length
+        availableSlots -= 1
+      } catch {
+        rejected.push(`${file.name}: could not read file`)
+      }
+    }
+
+    if (accepted.length) {
+      setAttachments((current) => [...current, ...accepted])
+    }
+
+    if (rejected.length) {
+      setNotice(rejected.join(' · '))
+    }
+  }
+
+  function removeAttachment(id) {
+    setAttachments((current) =>
+      current.filter((file) => file.id !== id)
+    )
+  }
+
+  async function sendMessage() {
+    const prompt = input.trim()
+
+    if ((!prompt && attachments.length === 0) || loading) return
+
+    const files = [...attachments]
+
+    const displayContent =
+      prompt ||
+      (files.some((file) => file.kind === 'image')
+        ? 'Please analyze the attached image(s).'
+        : 'Please review the attached file(s).')
+
+    const textContents = files
+      .filter((file) => file.kind === 'text')
+      .map((file) => {
+        const note = file.truncated
+          ? '\n[File content was shortened to fit the attachment limit.]'
+          : ''
+
+        return `--- File: ${file.name} ---\n${file.content}${note}`
+      })
+      .join('\n\n')
+
+    const content = textContents
+      ? `${displayContent}\n\nAttached file contents:\n\n${textContents}`
+      : displayContent
+
+    const nextMessages = [
+      ...messages,
+      {
+        role: 'user',
+        content,
+        displayContent,
+        images: files
+          .filter((file) => file.kind === 'image')
+          .map(({ name, mime, base64 }) => ({ name, mime, base64 })),
+        displayAttachments: files.map((file) => ({
+          id: file.id,
+          name: file.name,
+          kind: file.kind,
+          dataUrl: file.dataUrl || null,
+        })),
+      },
+    ]
+
+    setMessages(nextMessages)
+    setInput('')
+    setAttachments([])
+    setLoading(true)
+    setNotice('')
+
+    if (inputRef.current) {
+      inputRef.current.style.height = '40px'
+      inputRef.current.style.overflowY = 'hidden'
+    }
+
+    try {
+      const history = nextMessages.slice(-MAX_HISTORY)
+      let latestImageIndex = -1
+
+      history.forEach((message, index) => {
+        if (message.role === 'user' && message.images?.length) {
+          latestImageIndex = index
+        }
+      })
+
+      const apiMessages = history.map((message, index) => {
+        const apiMessage = {
+          role: message.role,
+          content: message.content.slice(0, 8000),
+        }
+
+        if (index === latestImageIndex) {
+          apiMessage.images = message.images.map((image) => image.base64)
+        }
+
+        return apiMessage
+      })
+
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: apiMessages }),
+      })
+
+      const data = await response.json().catch(() => ({}))
+
+      if (!response.ok) {
+        throw new Error(
+          data.error || `Request failed (${response.status})`
+        )
+      }
+
+      const reply =
+        data.reply ||
+        data.message?.content ||
+        data.output_text
+
+      if (typeof reply !== 'string' || !reply.trim()) {
+        throw new Error('The AI returned an empty response.')
+      }
+
+      setMessages((current) => [
+        ...current,
+        { role: 'assistant', content: reply },
+      ])
+    } catch (error) {
+      setMessages((current) => [
+        ...current,
+        {
+          role: 'assistant',
+          isError: true,
+          content:
+            `I couldn't get a response from Ollama Cloud.\n\n` +
+            `${error.message}\n\n` +
+            'Check your API key, model name, and /api/chat backend.',
+        },
+      ])
+    } finally {
+      setLoading(false)
+      inputRef.current?.focus()
+    }
+  }
+
+  function handleKeyDown(event) {
+    if (
+      event.key === 'Enter' &&
+      !event.shiftKey &&
+      !event.nativeEvent.isComposing
+    ) {
+      event.preventDefault()
+      sendMessage()
+    }
+  }
+
+  const quietButton = {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 0,
+    border: 'none',
+    borderRadius: 0,
+    background: 'transparent',
+    color: theme.text,
+    fontFamily: 'inherit',
+    cursor: 'pointer',
+    transition: 'opacity 220ms ease, color 300ms ease',
+  }
+
+  return (
+    <>
+      <Head>
+        <title>Radium</title>
+        <meta name="application-name" content="Radium" />
+        <meta name="theme-color" content={theme.page} />
+        <link
+          key={darkMode ? 'radium-dark-icon' : 'radium-light-icon'}
+          rel="icon"
+          type="image/png"
+          href={darkMode ? '/radium-logo-dark.png' : '/radium-logo.png'}
+        />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link
+          rel="preconnect"
+          href="https://fonts.gstatic.com"
+          crossOrigin="anonymous"
+        />
+        <link
+          href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500&display=swap"
+          rel="stylesheet"
+        />
+      </Head>
+
+      <style jsx global>{`
+        html, body, #__next {
+          width: 100%;
+          height: 100%;
+          margin: 0;
+          padding: 0;
+        }
+
+        * {
+          box-sizing: border-box;
+        }
+
+        body {
+          font-family: Roboto, Arial, sans-serif;
+        }
+
+        button, textarea {
+          font: inherit;
+        }
+
+        .radium-message, .radium-preview {
+          animation: radium-appear 360ms cubic-bezier(.22, 1, .36, 1) both;
+        }
+
+        @keyframes radium-appear {
+          from {
+            opacity: 0;
+            transform: translateY(7px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          *, *::before, *::after {
+            animation-duration: .01ms !important;
+            animation-iteration-count: 1 !important;
+            transition-duration: .01ms !important;
+            scroll-behavior: auto !important;
+          }
+        }
+      `}</style>
+
+      <main
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          width: '100%',
+          height: '100dvh',
+          minHeight: 400,
+          overflow: 'hidden',
+          background: theme.page,
+          color: theme.text,
+          fontFamily: 'Roboto, Arial, sans-serif',
+          transition: 'background-color 350ms ease, color 350ms ease',
+        }}
+      >
+        <section
+          aria-label="Conversation"
           style={{
-            position: 'relative',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            maxWidth: 220,
-            padding: 7,
-            border: `1px solid ${theme.border}`,
-            borderRadius: 10,
-            color: theme.muted,
-            fontSize: 12,
+            flex: 1,
+            minHeight: 0,
+            overflowY: 'auto',
+            overscrollBehavior: 'contain',
+            padding: '24px 20px',
           }}
         >
-          {file.kind === 'image' ? (
-            <img
-              src={file.dataUrl}
-              alt={file.name}
+          <div
+            style={{
+              maxWidth: 768,
+              width: '100%',
+              minHeight: '100%',
+              margin: '0 auto',
+              display: 'flex',
+              flexDirection: 'column',
+            }}
+          >
+            {messages.length === 0 ? (
+              <div
+                style={{
+                  flex: 1,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: '30px 12px',
+                  animation: 'radium-appear 550ms cubic-bezier(.22,1,.36,1) both',
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 13,
+                    maxWidth: '100%',
+                  }}
+                >
+                  <img
+                    src={darkMode ? '/radium-logo-dark.png' : '/radium-logo.png'}
+                    alt="Radium logo"
+                    width="96"
+                    height="96"
+                    style={{
+                      display: 'block',
+                      width: 96,
+                      height: 96,
+                      objectFit: 'contain',
+                      flexShrink: 0,
+                    }}
+                  />
+
+                  <h1
+                    style={{
+                      margin: 0,
+                      fontFamily: 'Roboto, Arial, sans-serif',
+                      fontSize: 'clamp(34px, 5vw, 43px)',
+                      lineHeight: 1.15,
+                      letterSpacing: '-1.2px',
+                      fontWeight: 400,
+                      color: theme.text,
+                    }}
+                  >
+                    Radium
+                  </h1>
+                </div>
+              </div>
+            ) : (
+              <>
+                {messages.map((message, index) => (
+                  <div
+                    key={`${index}-${message.role}`}
+                    className="radium-message"
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: message.role === 'user' ? 'flex-end' : 'flex-start',
+                      width: '100%',
+                      marginBottom: 28,
+                    }}
+                  >
+                    {message.role === 'user' ? (
+                      <div
+                        style={{
+                          maxWidth: '90%',
+                          background: theme.bubble,
+                          borderRadius: 22,
+                          padding: '12px 17px',
+                          fontSize: 15,
+                          lineHeight: 1.7,
+                          whiteSpace: 'pre-wrap',
+                          overflowWrap: 'anywhere',
+                          transition: 'background-color 300ms ease',
+                        }}
+                      >
+                        {message.displayContent || message.content}
+
+                        {message.displayAttachments?.length > 0 && (
+                          <div
+                            style={{
+                              display: 'flex',
+                              flexWrap: 'wrap',
+                              gap: 8,
+                              marginTop: 12,
+                            }}
+                          >
+                            {message.displayAttachments.map((file) => (
+                              <div
+                                key={file.id}
+                                style={{
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  gap: 5,
+                                  maxWidth: 150,
+                                  fontSize: 12,
+                                  color: theme.muted,
+                                }}
+                              >
+                                {file.kind === 'image' ? (
+                                  <img
+                                    className="radium-preview"
+                                    src={file.dataUrl}
+                                    alt={file.name}
+                                    style={{
+                                      display: 'block',
+                                      width: 132,
+                                      height: 100,
+                                      objectFit: 'cover',
+                                      borderRadius: 10,
+                                      border: `1px solid ${theme.border}`,
+                                    }}
+                                  />
+                                ) : (
+                                  <div
+                                    style={{
+                                      padding: '10px 12px',
+                                      border: `1px solid ${theme.border}`,
+                                      borderRadius: 9,
+                                      overflowWrap: 'anywhere',
+                                    }}
+                                  >
+                                    ▤ {file.name}
+                                  </div>
+                                )}
+
+                                <span
+                                  title={file.name}
+                                  style={{
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap',
+                                  }}
+                                >
+                                  {file.name}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div
+                        style={{
+                          width: '100%',
+                          fontSize: 15,
+                          lineHeight: 1.85,
+                          whiteSpace: 'pre-wrap',
+                          overflowWrap: 'anywhere',
+                          color: message.isError ? '#E05B55' : theme.text,
+                        }}
+                      >
+                        {message.content}
+                      </div>
+                    )}
+                  </div>
+                ))}
+
+                {loading && (
+                  <div
+                    role="status"
+                    className="radium-message"
+                    style={{
+                      margin: '8px 0 28px',
+                      fontSize: 14,
+                      color: theme.muted,
+                    }}
+                  >
+                    Radium is thinking…
+                  </div>
+                )}
+
+                <div ref={messagesEndRef} />
+              </>
+            )}
+          </div>
+        </section>
+
+        {/* Compact composer: plus, input, and send stay in one row. */}
+        <footer
+          style={{
+            flexShrink: 0,
+            width: '100%',
+            padding: '12px 18px 22px',
+            background: theme.page,
+            transition: 'background-color 350ms ease',
+          }}
+        >
+          <div style={{ maxWidth: 768, width: '100%', margin: '0 auto' }}>
+            <div
               style={{
-                width: 42,
-                height: 42,
-                objectFit: 'cover',
-                borderRadius: 6,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                width: '100%',
+                minHeight: 52,
+                padding: '5px 10px',
+                border: `1px solid ${theme.border}`,
+                borderRadius: 28,
+                background: theme.composer,
+                boxSizing: 'border-box',
+                boxShadow: darkMode ? 'none' : '0 2px 10px rgba(0,0,0,.04)',
+                transition: 'background-color 300ms ease, border-color 300ms ease',
               }}
-            />
-          ) : (
-            <span aria-hidden="true">▤</span>
-          )}
+            >
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept={[
+                  'image/png',
+                  'image/jpeg',
+                  'image/webp',
+                  ...Array.from(TEXT_EXTENSIONS).map((extension) => `.${extension}`),
+                  'text/*',
+                ].join(',')}
+                onChange={handleFilesSelected}
+                style={{ display: 'none' }}
+              />
 
-          <span
-            style={{
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {file.name}
-          </span>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={loading || attachments.length >= MAX_FILES}
+                aria-label="Attach files or images"
+                title="Attach files or images"
+                style={{
+                  ...quietButton,
+                  width: 30,
+                  height: 36,
+                  flexShrink: 0,
+                  fontSize: 27,
+                  fontWeight: 300,
+                  opacity: loading || attachments.length >= MAX_FILES ? 0.4 : 1,
+                  cursor: loading || attachments.length >= MAX_FILES ? 'not-allowed' : 'pointer',
+                }}
+              >
+                +
+              </button>
 
-          <button
-            type="button"
-            onClick={() => removeAttachment(file.id)}
-            aria-label={`Remove ${file.name}`}
-            style={{
-              border: 'none',
-              background: 'transparent',
-              color: theme.text,
-              cursor: 'pointer',
-              padding: 2,
-            }}
-          >
-            ×
-          </button>
-        </div>
-      ))}
-    </div>
-  )}
+              <textarea
+                ref={inputRef}
+                value={input}
+                rows={1}
+                placeholder="Type here"
+                aria-label="Type here"
+                onChange={(event) => {
+                  setInput(event.target.value)
+                  resizeComposer(event.currentTarget)
+                }}
+                onKeyDown={handleKeyDown}
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  display: 'block',
+                  height: 40,
+                  minHeight: 40,
+                  maxHeight: 64,
+                  margin: 0,
+                  padding: '8px 0',
+                  resize: 'none',
+                  overflowY: 'hidden',
+                  border: 'none',
+                  outline: 'none',
+                  boxShadow: 'none',
+                  background: 'transparent',
+                  color: theme.text,
+                  fontFamily: 'Roboto, Arial, sans-serif',
+                  fontSize: 16,
+                  lineHeight: '24px',
+                  boxSizing: 'border-box',
+                  transition: 'height 140ms ease',
+                }}
+              />
 
-  {notice && (
-    <div
-      role="status"
-      style={{
-        marginTop: 8,
-        fontSize: 12,
-        color: '#E05B55',
-        overflowWrap: 'anywhere',
-      }} 
-    >
-      {notice}
-    </div>
-  )}
-</div>
+              <button
+                type="button"
+                onClick={sendMessage}
+                disabled={!canSend}
+                aria-label="Send message"
+                title="Send message"
+                style={{
+                  ...quietButton,
+                  width: 32,
+                  height: 36,
+                  flexShrink: 0,
+                  opacity: canSend ? 1 : 0.4,
+                  cursor: canSend ? 'pointer' : 'not-allowed',
+                }}
+              >
+                <SendTriangle color={theme.text} />
+              </button>
+            </div>
+
+            {attachments.length > 0 && (
+              <div
+                style={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  gap: 10,
+                  marginTop: 10,
+                }}
+              >
+                {attachments.map((file) => (
+                  <div
+                    key={file.id}
+                    className="radium-preview"
+                    style={{
+                      position: 'relative',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      maxWidth: 220,
+                      padding: 7,
+                      border: `1px solid ${theme.border}`,
+                      borderRadius: 10,
+                      color: theme.muted,
+                      fontSize: 12,
+                    }}
+                  >
+                    {file.kind === 'image' ? (
+                      <img
+                        src={file.dataUrl}
+                        alt={file.name}
+                        style={{
+                          width: 42,
+                          height: 42,
+                          objectFit: 'cover',
+                          borderRadius: 6,
+                        }}
+                      />
+                    ) : (
+                      <span aria-hidden="true">▤</span>
+                    )}
+
+                    <span
+                      style={{
+                        maxWidth: 130,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {file.name}
+                    </span>
+
+                    <button
+                      type="button"
+                      onClick={() => removeAttachment(file.id)}
+                      aria-label={`Remove ${file.name}`}
+                      style={{
+                        ...quietButton,
+                        padding: 2,
+                        fontSize: 18,
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {notice && (
+              <div
+                role="status"
+                style={{
+                  marginTop: 8,
+                  fontSize: 12,
+                  color: '#E05B55',
+                  overflowWrap: 'anywhere',
+                }}
+              >
+                {notice}
+              </div>
+            )}
+          </div>
+        </footer>
+      </main>
+    </>
+  )
+}
