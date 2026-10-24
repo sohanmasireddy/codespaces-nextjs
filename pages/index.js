@@ -814,7 +814,7 @@ export default function Home() {
                       color: theme.muted,
                     }}
                   >
-                    Radium is thinking…
+                    Generating...
                   </div>
                 )}
 
