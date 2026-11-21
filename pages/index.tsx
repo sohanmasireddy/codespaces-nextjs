@@ -769,6 +769,9 @@ function ChatSession({
       <div ref={conversationRef} className={`conversation-scroll ${messages.length === 0 ? 'is-welcome' : ''}`}>
         {messages.length === 0 ? (
           <div className="welcome-content">
+            <div className="welcome-title">
+              <h1>ABC123</h1>
+            </div>
             <Composer
               welcome
               modelId={conversation.modelId}
