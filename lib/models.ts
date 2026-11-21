@@ -2,7 +2,6 @@ export const models = [
   {
     id: '@cf/qwen/qwen3.8-27b',
     name: 'Qwen 3.8',
-    description: 'Vision · configurable reasoning',
     vision: true,
     modes: ['auto', 'fast', 'thinking'],
     thinkingLevels: ['low', 'medium', 'maximum'],
@@ -10,7 +9,6 @@ export const models = [
   {
     id: '@cf/google/gemma-4-26b-a4b-it',
     name: 'Gemma 4',
-    description: 'Vision · thinking on or off',
     vision: true,
     modes: ['auto', 'fast', 'thinking'],
     thinkingLevels: [],
@@ -18,7 +16,6 @@ export const models = [
   {
     id: '@cf/meta/llama-4-scout-17b-16e-instruct',
     name: 'Llama 4 Scout',
-    description: 'Vision · no reasoning control',
     vision: true,
     modes: ['auto', 'fast'],
     thinkingLevels: [],

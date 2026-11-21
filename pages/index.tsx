@@ -129,9 +129,12 @@ function ModelLogo({ modelId }: { modelId: ModelId }) {
     setAvailable(true)
   }, [modelId])
   if (!available) return null
+  const isExpandedLogo =
+    modelId === '@cf/qwen/qwen3.8-27b' ||
+    modelId === '@cf/google/gemma-4-26b-a4b-it'
   return (
     <img
-      className="model-logo"
+      className={`model-logo${isExpandedLogo ? ' model-logo-expanded' : ''}`}
       src={modelLogoPaths[modelId]}
       alt=""
       onError={() => setAvailable(false)}
@@ -409,10 +412,7 @@ function Composer({
                     >
                       <span className="model-menu-option">
                         <ModelLogo modelId={model.id} />
-                        <span>
-                          <strong>{model.name}</strong>
-                          <small>{model.description}</small>
-                        </span>
+                        <strong>{model.name}</strong>
                       </span>
                     </MenuItem>
                   ))}
@@ -475,9 +475,6 @@ function Composer({
                   {mode === 'fast' && <p className="settings-help">Uses a shorter output limit; speed depends on provider load.</p>}
                   {mode === 'thinking' && thinkingLevels.length === 0 && (
                     <p className="settings-help">Thinking is enabled, but this model does not expose a reasoning-effort setting.</p>
-                  )}
-                  {selectedModel.id === '@cf/meta/llama-4-scout-17b-16e-instruct' && (
-                    <p className="settings-help">Llama 4 Scout does not expose a thinking or reasoning control.</p>
                   )}
                 </div>
               </MenuPopover>
