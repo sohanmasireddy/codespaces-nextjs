@@ -382,7 +382,7 @@ function Composer({
               <Button
                 className="composer-tool"
                 appearance="subtle"
-                icon={<Paperclip size={17} />}
+                icon={<Paperclip className="composer-action-icon" size={19} />}
                 aria-label="Add attachments"
                 onClick={() => fileInputRef.current?.click()}
               />
@@ -399,7 +399,7 @@ function Composer({
                   <ChevronDown size={14} />
                 </Button>
               </MenuTrigger>
-              <MenuPopover>
+              <MenuPopover className="chat-menu-popover">
                 <MenuList>
                   {models.map((model) => (
                     <MenuItem
@@ -433,7 +433,7 @@ function Composer({
                     <ChevronDown size={14} />
                   </Button>
                 </MenuTrigger>
-                <MenuPopover>
+                <MenuPopover className="chat-menu-popover">
                   <MenuList>
                     {thinkingLevels.map((level) => (
                       <MenuItem
@@ -453,14 +453,14 @@ function Composer({
                 <Button
                   appearance="subtle"
                   className="settings-trigger"
-                  icon={<Sparkles size={16} />}
+                  icon={<Sparkles className="composer-action-icon" size={19} />}
                   aria-label="Model response settings"
                 >
                   <span>{mode === 'auto' ? 'Auto' : mode === 'fast' ? 'Fast' : 'Thinking'}</span>
                   <ChevronDown size={14} />
                 </Button>
               </MenuTrigger>
-              <MenuPopover>
+              <MenuPopover className="chat-menu-popover">
                 <div className="settings-menu">
                   <div className="settings-label">Response mode</div>
                   {selectedModel.modes.map((option) => (

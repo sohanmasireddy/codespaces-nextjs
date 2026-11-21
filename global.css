@@ -447,6 +447,10 @@ button {
   line-height: 1.55 !important;
 }
 
+.composer-input::after {
+  display: none !important;
+}
+
 .composer-input textarea::placeholder {
   color: #a4a19a;
 }
@@ -471,7 +475,25 @@ button {
 .composer-tool {
   min-width: 34px !important;
   min-height: 32px !important;
-  color: var(--muted) !important;
+  color: #111111 !important;
+}
+
+.composer-tool:hover,
+.composer-tool:active,
+.composer-tool:focus,
+.composer-tool[aria-expanded="true"],
+.settings-trigger:hover,
+.settings-trigger:active,
+.settings-trigger:focus,
+.settings-trigger[aria-expanded="true"] {
+  background-color: transparent !important;
+  color: #111111 !important;
+}
+
+.composer-action-icon {
+  width: 19px;
+  height: 19px;
+  color: #111111 !important;
 }
 
 .model-menu-trigger,
@@ -521,6 +543,11 @@ button {
 .model-menu-option small {
   color: var(--muted);
   font-size: 10px;
+}
+
+.chat-menu-popover {
+  overflow: hidden;
+  border-radius: 12px !important;
 }
 
 .settings-menu {

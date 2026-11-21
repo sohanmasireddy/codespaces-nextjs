@@ -14,7 +14,7 @@ A Claude-inspired Next.js chat UI powered by Cloudflare Workers AI. The Pages Ro
 
 `npm run dev` builds the static site and runs it with the Pages Functions runtime.
 
-The Cloudflare token needs permission to run Workers AI models. The app persists conversations in the browser's IndexedDB; it does not need a database. The monochrome model-initial icons are the PNG files in `public/` named `model-qwen.png`, `model-gemma.png`, and `model-llama.png`.
+The Cloudflare token needs permission to run Workers AI models. The app persists conversations in the browser's IndexedDB; it does not need a database. Optional model PNGs can be added to `public/` as `model-qwen.png`, `model-gemma.png`, and `model-llama.png`; missing icons are omitted.
 
 ## Models and capabilities
 
