@@ -74,13 +74,6 @@ type Attachment = {
   previewUrl?: string
 }
 
-const suggestedPrompts = [
-  { title: 'Make a plan', prompt: 'Help me make a clear, realistic plan for the week.' },
-  { title: 'Explain a concept', prompt: 'Explain a complex idea in simple terms, with an example.' },
-  { title: 'Write something', prompt: 'Help me write a thoughtful message for a situation I describe.' },
-  { title: 'Explore an idea', prompt: 'Help me think through an idea and the questions I should consider.' },
-]
-
 const textExtensions = new Set([
   'txt', 'md', 'csv', 'json', 'yaml', 'yml', 'xml', 'html', 'css', 'js', 'jsx',
   'ts', 'tsx', 'py', 'go', 'rs', 'java', 'c', 'cpp', 'h', 'sh', 'sql', 'log',
@@ -124,13 +117,22 @@ function formatUpdatedAt(timestamp: number) {
   return date.toLocaleDateString([], { month: 'short', day: 'numeric' })
 }
 
-function ModelLogo() {
+const modelLogoPaths: Record<ModelId, string> = {
+  '@cf/qwen/qwen3.8-27b': '/model-qwen.png',
+  '@cf/google/gemma-4-26b-a4b-it': '/model-gemma.png',
+  '@cf/meta/llama-4-scout-17b-16e-instruct': '/model-llama.png',
+}
+
+function ModelLogo({ modelId }: { modelId: ModelId }) {
   const [available, setAvailable] = useState(true)
+  useEffect(() => {
+    setAvailable(true)
+  }, [modelId])
   if (!available) return null
   return (
     <img
       className="model-logo"
-      src="/model-logo.png"
+      src={modelLogoPaths[modelId]}
       alt=""
       onError={() => setAvailable(false)}
     />
@@ -392,7 +394,7 @@ function Composer({
                   className="model-menu-trigger"
                   aria-label={`Selected model: ${selectedModel.name}`}
                 >
-                  <ModelLogo />
+                  <ModelLogo modelId={selectedModel.id} />
                   <span>{selectedModel.name}</span>
                   <ChevronDown size={14} />
                 </Button>
@@ -406,7 +408,7 @@ function Composer({
                       secondaryContent={model.id === modelId ? <Check size={15} /> : undefined}
                     >
                       <span className="model-menu-option">
-                        <ModelLogo />
+                        <ModelLogo modelId={model.id} />
                         <span>
                           <strong>{model.name}</strong>
                           <small>{model.description}</small>
@@ -417,6 +419,35 @@ function Composer({
                 </MenuList>
               </MenuPopover>
             </Menu>
+            {mode === 'thinking' && thinkingLevels.length > 0 && (
+              <Menu>
+                <MenuTrigger disableButtonEnhancement>
+                  <Button
+                    appearance="subtle"
+                    className="thinking-level-trigger"
+                    aria-label={`Reasoning effort: ${thinkingLevel}`}
+                  >
+                    {thinkingLevel === 'maximum'
+                      ? 'Maximum'
+                      : thinkingLevel[0].toUpperCase() + thinkingLevel.slice(1)}
+                    <ChevronDown size={14} />
+                  </Button>
+                </MenuTrigger>
+                <MenuPopover>
+                  <MenuList>
+                    {thinkingLevels.map((level) => (
+                      <MenuItem
+                        key={level}
+                        onClick={() => onThinkingChange(level)}
+                        secondaryContent={thinkingLevel === level ? <Check size={15} /> : undefined}
+                      >
+                        {level === 'maximum' ? 'Maximum' : level[0].toUpperCase() + level.slice(1)}
+                      </MenuItem>
+                    ))}
+                  </MenuList>
+                </MenuPopover>
+              </Menu>
+            )}
             <Menu>
               <MenuTrigger disableButtonEnhancement>
                 <Button
@@ -442,21 +473,6 @@ function Composer({
                     </MenuItem>
                   ))}
                   {mode === 'fast' && <p className="settings-help">Uses a shorter output limit; speed depends on provider load.</p>}
-                  {mode === 'thinking' && thinkingLevels.length > 0 && (
-                    <>
-                      <div className="settings-divider" />
-                      <div className="settings-label">Reasoning effort</div>
-                      {thinkingLevels.map((level) => (
-                        <MenuItem
-                          key={level}
-                          onClick={() => onThinkingChange(level)}
-                          secondaryContent={thinkingLevel === level ? <Check size={15} /> : undefined}
-                        >
-                          {level === 'maximum' ? 'Maximum' : level[0].toUpperCase() + level.slice(1)}
-                        </MenuItem>
-                      ))}
-                    </>
-                  )}
                   {mode === 'thinking' && thinkingLevels.length === 0 && (
                     <p className="settings-help">Thinking is enabled, but this model does not expose a reasoning-effort setting.</p>
                   )}
@@ -492,11 +508,6 @@ function Composer({
         </div>
       </form>
       {notice && <p className="composer-notice" role="status">{notice}</p>}
-      <p className="composer-disclaimer">
-        {welcome
-          ? 'AI can make mistakes. Check important information.'
-          : 'Enter to send · Shift + Enter for a new line'}
-      </p>
     </div>
   )
 }
@@ -758,22 +769,9 @@ function ChatSession({
 
   return (
     <div className={`chat-session ${theme === 'dark' ? 'is-dark' : ''}`}>
-      <header className="topbar">
-        <div className="topbar-model">
-          <ModelLogo />
-          <span>{models.find((model) => model.id === conversation.modelId)?.name}</span>
-          {conversation.mode === 'thinking' && <span className="mode-indicator">Thinking</span>}
-        </div>
-        <span className="privacy-label">Cloudflare Workers AI</span>
-      </header>
       <div ref={conversationRef} className={`conversation-scroll ${messages.length === 0 ? 'is-welcome' : ''}`}>
         {messages.length === 0 ? (
           <div className="welcome-content">
-            <div className="welcome-title">
-              <div className="welcome-mark"><Sparkles size={21} /></div>
-              <h1>What would you like to explore?</h1>
-              <p>A little clarity can change everything.</p>
-            </div>
             <Composer
               welcome
               modelId={conversation.modelId}
@@ -786,19 +784,6 @@ function ChatSession({
               onSubmit={handleSubmit}
               onStop={() => void stop()}
             />
-            <div className="suggested-prompts">
-              {suggestedPrompts.map((suggestion) => (
-                <button
-                  type="button"
-                  className="suggestion-card"
-                  key={suggestion.title}
-                  onClick={() => void handleSubmit(suggestion.prompt, [])}
-                >
-                  <span>{suggestion.title}</span>
-                  <small>{suggestion.prompt}</small>
-                </button>
-              ))}
-            </div>
           </div>
         ) : (
           <div className="message-list">
@@ -986,7 +971,7 @@ export default function Home() {
 
   return (
     <FluentProvider theme={theme === 'dark' ? webDarkTheme : webLightTheme}>
-      <main className={`app-shell min-h-screen selection:bg-amber-100 ${theme === 'dark' ? 'theme-dark' : ''}`}>
+      <main className={`app-shell ${theme === 'dark' ? 'theme-dark' : ''}`}>
         <aside className={`sidebar ${sidebarOpen ? '' : 'sidebar-collapsed'}`} aria-label="Chat history">
           <div className="sidebar-header">
             {sidebarOpen && <span className="brand-wordmark">Companion</span>}
@@ -1060,7 +1045,7 @@ export default function Home() {
               <div className="sidebar-spacer" />
               <div className="sidebar-footer">
                 <div className="sidebar-model">
-                  <ModelLogo />
+                  <ModelLogo modelId={activeConversation?.modelId ?? defaultModelId} />
                   <span>{activeConversation ? models.find((model) => model.id === activeConversation.modelId)?.name : 'Cloudflare AI'}</span>
                 </div>
                 <Tooltip content={theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'} relationship="label">
