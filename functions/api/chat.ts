@@ -8,7 +8,7 @@ import {
   buildModelParameters,
   getModel,
   supportsMode,
-} from '../../../lib/models'
+} from '../../lib/models'
 
 type CloudflareMessage = {
   role: 'user' | 'assistant'
@@ -209,9 +209,20 @@ async function readJsonBody(request: Request): Promise<unknown> {
   }
 }
 
-export async function POST(request: Request) {
-  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID
-  const apiToken = process.env.CLOUDFLARE_API_TOKEN
+type Env = {
+  CLOUDFLARE_ACCOUNT_ID: string
+  CLOUDFLARE_API_TOKEN: string
+}
+
+export async function onRequestPost({
+  request,
+  env,
+}: {
+  request: Request
+  env: Env
+}) {
+  const accountId = env.CLOUDFLARE_ACCOUNT_ID
+  const apiToken = env.CLOUDFLARE_API_TOKEN
   if (!accountId || !apiToken) {
     return Response.json(
       { error: 'Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to enable chat.' },
